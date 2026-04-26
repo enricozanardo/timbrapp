@@ -1,0 +1,225 @@
+<script lang="ts">
+	import { editor } from '$lib/stores/editor.svelte';
+	import { addStamp, deleteStamp } from '$lib/db/stampStore';
+	import { getStampUrl, releaseStampUrl } from '$lib/stamps/objectUrl';
+
+	let inputEl: HTMLInputElement;
+	let uploadError = $state<string | null>(null);
+
+	async function onUpload(e: Event) {
+		uploadError = null;
+		const t = e.currentTarget as HTMLInputElement;
+		const file = t.files?.[0];
+		t.value = '';
+		if (!file) return;
+		try {
+			if (file.type && file.type !== 'image/png') {
+				throw new Error('Only PNG images are supported');
+			}
+			const name = file.name.replace(/\.(png)$/i, '') || 'stamp';
+			await addStamp(name, file);
+			await editor.refreshStamps();
+		} catch (err) {
+			uploadError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	async function onDelete(stampId: string) {
+		if (!confirm('Remove this stamp from your library?')) return;
+		releaseStampUrl(stampId);
+		await deleteStamp(stampId);
+		await editor.refreshStamps();
+	}
+
+	function onSelect(stampId: string) {
+		editor.selectStamp(editor.selectedStampId === stampId ? null : stampId);
+	}
+</script>
+
+<aside class="library" aria-label="Stamp library">
+	<header>
+		<h2>Stamps</h2>
+		<button type="button" class="btn" onclick={() => inputEl.click()}>+ Add PNG</button>
+		<input
+			bind:this={inputEl}
+			type="file"
+			accept="image/png,.png"
+			onchange={onUpload}
+			hidden
+		/>
+	</header>
+
+	{#if uploadError}
+		<p class="error">{uploadError}</p>
+	{/if}
+
+	{#if editor.stamps.length === 0}
+		<p class="empty">No stamps yet. Add a PNG to get started.</p>
+	{:else}
+		<ul class="grid">
+			{#each editor.stamps as stamp (stamp.id)}
+				{@const selected = editor.selectedStampId === stamp.id}
+				<li class="card" class:selected>
+					<button
+						type="button"
+						class="thumb"
+						aria-pressed={selected}
+						aria-label="Use stamp {stamp.name}"
+						onclick={() => onSelect(stamp.id)}
+					>
+						<img src={getStampUrl(stamp)} alt="" loading="lazy" />
+					</button>
+					<div class="meta">
+						<span class="name" title={stamp.name}>{stamp.name}</span>
+						<button
+							type="button"
+							class="icon"
+							aria-label="Delete stamp"
+							onclick={() => onDelete(stamp.id)}
+						>
+							×
+						</button>
+					</div>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+
+	{#if editor.selectedStampId && editor.hasPdf}
+		<p class="hint">Click on the PDF to place the selected stamp.</p>
+	{/if}
+
+	{#if editor.placements.length > 0}
+		<p class="hint subtle">
+			To remove a placed stamp, hover it and click <strong>×</strong>, or select it and press
+			<kbd>Delete</kbd>.
+		</p>
+	{/if}
+</aside>
+
+<style>
+	.library {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		padding: 1rem;
+		background: var(--surface-1, #ffffff);
+		border-right: 1px solid var(--border, #e2e8f0);
+		min-width: 240px;
+		max-width: 280px;
+		overflow-y: auto;
+	}
+	header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	h2 {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 600;
+		color: #0f172a;
+	}
+	.btn {
+		appearance: none;
+		border: 1px solid var(--border, #cbd5e1);
+		background: white;
+		border-radius: 6px;
+		padding: 0.35rem 0.6rem;
+		font-size: 0.8rem;
+		cursor: pointer;
+		color: #1e293b;
+	}
+	.btn:hover {
+		background: #f1f5f9;
+	}
+	.empty,
+	.hint {
+		font-size: 0.85rem;
+		color: #64748b;
+		margin: 0;
+	}
+	.hint.subtle {
+		padding-top: 0.5rem;
+		border-top: 1px dashed var(--border, #e2e8f0);
+		line-height: 1.4;
+	}
+	kbd {
+		font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+		font-size: 0.75rem;
+		padding: 0.05rem 0.35rem;
+		background: #f1f5f9;
+		border: 1px solid var(--border, #cbd5e1);
+		border-radius: 4px;
+		color: #1e293b;
+	}
+	.error {
+		font-size: 0.85rem;
+		color: #b91c1c;
+	}
+	.grid {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.5rem;
+	}
+	.card {
+		display: flex;
+		flex-direction: column;
+		border: 1px solid var(--border, #e2e8f0);
+		border-radius: 8px;
+		overflow: hidden;
+		background: white;
+	}
+	.card.selected {
+		border-color: var(--accent, #2563eb);
+		box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18);
+	}
+	.thumb {
+		appearance: none;
+		border: 0;
+		padding: 0.5rem;
+		background: white;
+		cursor: pointer;
+		aspect-ratio: 1 / 1;
+		display: grid;
+		place-items: center;
+	}
+	.thumb img {
+		max-width: 100%;
+		max-height: 100%;
+		object-fit: contain;
+	}
+	.meta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.25rem;
+		padding: 0.25rem 0.5rem;
+		font-size: 0.8rem;
+		background: #f8fafc;
+		border-top: 1px solid var(--border, #e2e8f0);
+	}
+	.name {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		color: #0f172a;
+	}
+	.icon {
+		appearance: none;
+		border: 0;
+		background: transparent;
+		font-size: 1.1rem;
+		line-height: 1;
+		color: #64748b;
+		cursor: pointer;
+		padding: 0 0.25rem;
+	}
+	.icon:hover {
+		color: #b91c1c;
+	}
+</style>
