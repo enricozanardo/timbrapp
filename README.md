@@ -9,16 +9,81 @@ PDF. Nothing leaves your device — there's no backend.
 Ships as both a **web app** and a **native desktop app** (Windows, macOS,
 Linux) packaged with [Tauri 2](https://v2.tauri.app/).
 
-## Quick start
+## Download & install
+
+Pre-built installers are published on the
+[**Releases page**](https://github.com/enricozanardo/timbrapp/releases/latest).
+
+| OS / family | File to download | Install |
+|---|---|---|
+| **Windows 10/11** (x86\_64) | `timbrapp_<version>_x64-setup.exe` *or* `timbrapp_<version>_x64_en-US.msi` | Double-click; Windows SmartScreen will warn ("Windows protected your PC") because the binary is unsigned — click **More info → Run anyway**. |
+| **macOS — Apple Silicon** (M1/M2/M3/M4) | `timbrapp_<version>_aarch64.dmg` | Open the `.dmg`, drag **timbrapp** to *Applications*. The first launch is blocked by Gatekeeper (unsigned); **right-click the app → Open → Open**. |
+| **macOS — Intel** | `timbrapp_<version>_x64.dmg` | Same as above. |
+| **Debian / Ubuntu / Mint / Pop!\_OS** (x86\_64) | `timbrapp_<version>_amd64.deb` | `sudo apt install ./timbrapp_<version>_amd64.deb` |
+| **Fedora / RHEL / openSUSE** (x86\_64) | `timbrapp-<version>-1.x86_64.rpm` | `sudo dnf install ./timbrapp-<version>-1.x86_64.rpm` (or `zypper`) |
+| **Arch / Manjaro / Gentoo / NixOS / any other Linux** (x86\_64) | `timbrapp_<version>_amd64.AppImage` | `chmod +x timbrapp_<version>_amd64.AppImage && ./timbrapp_<version>_amd64.AppImage` |
+
+> **Note on macOS / Windows warnings.** The bundled binaries are not yet code
+> signed. They are perfectly safe — they're built by GitHub Actions directly
+> from this repository — but unsigned binaries trigger Gatekeeper / SmartScreen
+> warnings on first launch. The "Run anyway" / "right-click → Open" flow only
+> needs to be done once.
+
+### Linux specifics (including Gentoo)
+
+The `.AppImage` is the most portable Linux artifact and runs on essentially
+any glibc-based distro shipped after ~2020. It needs three things on the host:
+
+- **WebKitGTK 4.1** (the embedded browser).
+- **GTK 3**.
+- **FUSE 2** (so the AppImage can mount itself).
+
+Per-distro install of the runtime dependencies:
+
+```bash
+# Debian / Ubuntu (also picked up automatically when you install the .deb)
+sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 fuse
+
+# Fedora
+sudo dnf install webkit2gtk4.1 gtk3 fuse
+
+# Arch / Manjaro
+sudo pacman -S webkit2gtk-4.1 gtk3 fuse2
+
+# Gentoo (Portage)
+sudo emerge --ask net-libs/webkit-gtk:4.1 x11-libs/gtk+:3 sys-fs/fuse:0
+
+# NixOS — easiest path is to wrap the AppImage with appimage-run:
+nix-shell -p appimage-run --run "appimage-run ./timbrapp_<version>_amd64.AppImage"
+```
+
+> On **Gentoo**, make sure `net-libs/webkit-gtk` is built with the
+> `introspection` USE flag (default in most profiles). If `./timbrapp.AppImage`
+> errors with `dlopen ... libwebkit2gtk-4.1.so.0: cannot open shared object
+> file`, that's the package you're missing.
+
+If you'd rather not deal with FUSE at all on a strange distro, you can extract
+the AppImage to a folder and run the binary inside it directly:
+
+```bash
+./timbrapp_<version>_amd64.AppImage --appimage-extract
+./squashfs-root/AppRun
+```
+
+## Run from source (developers)
+
+If you want to hack on the app instead of installing a release binary:
 
 ```bash
 npm install
-npm run dev
+npm run dev          # web app at http://localhost:5173
+# — or —
+npm run tauri:dev    # native window with hot-reload (needs Rust + system deps)
 ```
 
-Open [http://localhost:5173](http://localhost:5173). On first launch the
-default `Libera Università Gorgia` stamp from `static/stamps/` is seeded into
-your browser's IndexedDB so you have something to play with.
+On first launch the default `Libera Università Gorgia` stamp from
+`static/stamps/` is seeded into your browser's IndexedDB so you have something
+to play with.
 
 ## How to use
 
