@@ -1,3 +1,27 @@
+# Node / SvelteKit
+node_modules/
+.svelte-kit/
+.vite/
+build/
+package-lock.json.bak
+*.tsbuildinfo
+
+# Tauri (Rust shell)
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Override Python-style ignores below for SvelteKit + Tauri conventions
+!src/lib/
+!src/lib/**
+!src-tauri/
+!src-tauri/**
+!src-tauri/build.rs
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

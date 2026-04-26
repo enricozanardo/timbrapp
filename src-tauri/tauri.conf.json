@@ -1,0 +1,58 @@
+{
+	"$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+	"productName": "timbrapp",
+	"version": "0.1.0",
+	"identifier": "app.timbrapp.timbrapp",
+	"build": {
+		"frontendDist": "../build",
+		"devUrl": "http://localhost:5174",
+		"beforeDevCommand": "npm run dev -- --port 5174 --strictPort",
+		"beforeBuildCommand": "npm run build"
+	},
+	"app": {
+		"windows": [
+			{
+				"label": "main",
+				"title": "timbrapp",
+				"width": 1280,
+				"height": 820,
+				"minWidth": 900,
+				"minHeight": 600,
+				"resizable": true,
+				"fullscreen": false,
+				"center": true
+			}
+		],
+		"security": {
+			"csp": null
+		}
+	},
+	"bundle": {
+		"active": true,
+		"targets": "all",
+		"category": "Productivity",
+		"shortDescription": "Apply PNG stamps and signatures to PDF files",
+		"longDescription": "timbrapp is a small offline desktop app to apply reusable PNG stamps or signatures to PDF documents. Drag a PDF in, place a stamp from your saved library, and export a stamped copy.",
+		"copyright": "",
+		"icon": [
+			"icons/32x32.png",
+			"icons/128x128.png",
+			"icons/128x128@2x.png",
+			"icons/icon.icns",
+			"icons/icon.ico"
+		],
+		"linux": {
+			"deb": {
+				"depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+			}
+		},
+		"macOS": {
+			"minimumSystemVersion": "10.15"
+		},
+		"windows": {
+			"webviewInstallMode": {
+				"type": "embedBootstrapper"
+			}
+		}
+	}
+}
