@@ -10,6 +10,13 @@ package-lock.json.bak
 .env
 .env.*
 !.env.example
+# Local credential scratchpads — never commit
+apple.txt
+*-b64.txt
+*.p12
+*.pfx
+*.cer
+*.certSigningRequest
 
 # Tauri (Rust shell)
 src-tauri/target/
