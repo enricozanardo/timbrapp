@@ -226,19 +226,135 @@ publish.
 to `main` to verify the web build typechecks and the Tauri shell still
 `cargo check`s.
 
-### Code signing (optional)
+## Becoming a "trusted" publisher
 
-The unsigned macOS `.dmg` and Windows `.msi`/`.exe` will trigger SmartScreen
-or Gatekeeper warnings — fine for personal/internal distribution, awkward for
-public releases. To sign:
+This is what's required to ship installers that don't trigger SmartScreen or
+Gatekeeper warnings (Windows / macOS), and what's available on Linux. The
+GitHub Actions workflow is already wired up to pick up signing secrets when
+present — adding signing is a matter of obtaining credentials and pasting
+them into repository secrets.
 
-- **macOS**: set `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
-  `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`,
-  `APPLE_PASSWORD` repository secrets (the
-  [tauri-action docs](https://github.com/tauri-apps/tauri-action#code-signing)
-  list what each one does).
-- **Windows**: set `WINDOWS_CERTIFICATE` (base64-encoded `.pfx`) and
-  `WINDOWS_CERTIFICATE_PASSWORD`.
+### macOS — Apple Developer ID + notarization
 
-The release workflow already wires `GITHUB_TOKEN`; signing secrets are
-picked up automatically by `tauri-action` when present.
+What "trusted" means: the app launches with a single click on any modern
+Mac without the right-click → Open dance, and Gatekeeper shows the
+publisher name.
+
+Steps:
+
+1. **Enroll in the Apple Developer Program** — $99/year, individual or
+   organization. Sign up at <https://developer.apple.com/programs/>.
+2. **Create a Developer ID Application certificate** in the
+   *Certificates, Identifiers & Profiles* section of the developer portal.
+   Download the `.p12` (export from Keychain Access with a password).
+3. **Generate an app-specific password** at <https://appleid.apple.com>
+   (Sign-In and Security → App-Specific Passwords). This is what
+   notarization uses, *not* your Apple ID password.
+4. **Add these GitHub repository secrets** (Settings → Secrets and variables
+   → Actions):
+
+   | Secret | Value |
+   |---|---|
+   | `APPLE_CERTIFICATE` | base64 of the `.p12` (`base64 -i Cert.p12 \| pbcopy`) |
+   | `APPLE_CERTIFICATE_PASSWORD` | password used when exporting the `.p12` |
+   | `APPLE_SIGNING_IDENTITY` | the certificate's common name, e.g. `Developer ID Application: Your Name (TEAMID)` |
+   | `APPLE_ID` | your Apple ID email |
+   | `APPLE_TEAM_ID` | 10-char Team ID, visible on the developer portal |
+   | `APPLE_PASSWORD` | the app-specific password from step 3 |
+
+5. Push a new tag. `tauri-action` detects the secrets, signs the `.app`,
+   submits to Apple's notary service, and staples the resulting ticket to
+   the `.dmg`. The whole flow adds 2–5 minutes to the CI build.
+
+Reference: [Tauri code-signing docs (macOS)](https://v2.tauri.app/distribute/sign/macos/)
+· [tauri-action signing inputs](https://github.com/tauri-apps/tauri-action#code-signing).
+
+### Windows — Code-signing certificate
+
+What "trusted" means: SmartScreen no longer shows a warning on download
+and the publisher name appears instead of "unknown publisher" in the UAC
+prompt.
+
+There are two flavors of certificate you can buy:
+
+| Type | Cost (≈) | SmartScreen reputation |
+|---|---|---|
+| **Standard / OV** (Organization Validated) | $100–250 / year | Built up over time as users download and run the binary; new releases are flagged for the first few days/weeks until reputation accumulates |
+| **EV** (Extended Validation) | $300–700 / year | Instantly trusted by SmartScreen — no warm-up period |
+
+EV is the only way to get *immediate* SmartScreen trust. Both kinds require
+identity verification of you / your company by the issuing CA (DigiCert,
+SSL.com, Sectigo, GlobalSign, etc.).
+
+Recent regulatory change (June 2023): Windows code-signing private keys
+**must** live on a hardware token (USB HSM / cloud HSM). You can't just
+hand a `.pfx` to GitHub Actions any more for new certificates. Two
+practical options:
+
+- **Cloud-HSM-backed signing service** (e.g. SSL.com eSigner, DigiCert
+  KeyLocker, Azure Trusted Signing). You configure the signer in
+  `tauri.conf.json` and pass an API token to CI.
+- **Local self-hosted runner** with the USB token plugged in (only viable
+  for low release frequency).
+
+For Tauri 2 the relevant `tauri.conf.json` block lives under
+`bundle.windows.signCommand` (custom signer) or `bundle.windows.certificateThumbprint`
+(traditional `.pfx` flow, only legal for legacy certs). See
+[Tauri code-signing docs (Windows)](https://v2.tauri.app/distribute/sign/windows/).
+
+If you go the cloud-HSM route with Azure Trusted Signing (cheapest as of
+2026, ~$120/year), the GH Actions secrets you need are roughly:
+
+```
+AZURE_CLIENT_ID
+AZURE_CLIENT_SECRET
+AZURE_TENANT_ID
+AZURE_CODE_SIGNING_NAME
+```
+
+…and a `signCommand` invoking `azuresigntool.exe` in
+`tauri.conf.json#bundle.windows`.
+
+### Linux — there is no central "trusted developer"
+
+Linux has no Gatekeeper / SmartScreen equivalent. Trust is established
+distro-by-distro and through reputation. The realistic options, ranked
+by reach:
+
+1. **Publish to [Flathub](https://flathub.org/)** — the most universal
+   path. One Flatpak manifest, available in GNOME Software / KDE Discover
+   / `flatpak install` on virtually every desktop Linux distro,
+   sandboxed. Tauri provides a Flatpak target. You go through a one-time
+   review when submitting the manifest.
+2. **Publish to the [Snap Store](https://snapcraft.io/)** — same idea, run
+   by Canonical, default on Ubuntu. Tauri can produce `.snap` bundles via
+   `snapcraft`.
+3. **Sign your `.deb` / `.rpm` artifacts with GPG** and publish the public
+   key on a keyserver and on this repo. `apt-key` / `rpm --import` then
+   verify checksums automatically. This is what you'd do for a
+   self-hosted apt/yum repo.
+4. **Submit packages to specific distros**:
+   - Arch: AUR (`PKGBUILD`) or community repo via maintainers.
+   - Gentoo: ebuild in [::guru overlay](https://wiki.gentoo.org/wiki/Project:GURU)
+     first, then potentially ::gentoo.
+   - Debian/Ubuntu: ITP (Intent to Package) → maintainer review → main
+     repo. Slow but produces "real" trust (`apt install timbrapp`).
+   - Fedora: Fedora Package Sources, similar review process.
+
+For most projects, Flathub is the right answer: one place, one review,
+all distros. The downside is the sandbox can complicate IndexedDB / file
+access — for timbrapp this isn't an issue (we don't touch the filesystem
+outside of save dialogs).
+
+### Quick reference: which secrets unlock signed CI builds
+
+| Platform | Repo secrets required |
+|---|---|
+| macOS | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_PASSWORD` |
+| Windows (Azure Trusted Signing) | `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`, `AZURE_CODE_SIGNING_NAME` + a `signCommand` in `tauri.conf.json` |
+| Windows (legacy `.pfx`, valid only for pre-2023 certs) | `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` |
+| Linux (Flathub) | a Flathub repo + manifest, no GitHub secrets needed |
+
+The release workflow already wires `GITHUB_TOKEN`; the signing secrets
+above are picked up automatically by `tauri-action` and the relevant
+Tauri bundlers when present.
