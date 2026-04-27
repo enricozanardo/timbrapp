@@ -2,6 +2,19 @@ name: Release
 
 # Build and publish desktop installers for macOS, Linux and Windows when a
 # version tag (e.g. `v0.1.0`) is pushed. Can also be triggered manually.
+#
+# Topology:
+#   create-release  →  build (matrix x4)  →  publish-release
+#
+# `create-release` runs first and produces a single draft release whose ID
+# is passed to every matrix build. Without this, all 4 matrix jobs race to
+# create their own draft when none exists yet, which silently produces 4
+# duplicate drafts (each with only one platform's assets and a partial
+# `latest.json`). Tying the matrix to a pre-created `release_id` removes
+# the race.
+#
+# `publish-release` flips the draft to published + Latest after every
+# matrix build succeeds, so users never see a half-uploaded release.
 
 on:
   push:
@@ -13,8 +26,36 @@ permissions:
   contents: write
 
 jobs:
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create draft release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `timbrapp ${tag}`,
+              body: 'See `CHANGELOG.md` for details. Installers below are built from this tag.',
+              draft: true,
+              prerelease: false,
+            });
+            core.setOutput('release_id', data.id);
+            core.notice(`Created draft release ${tag} (id=${data.id})`);
+
   build:
     name: Build (${{ matrix.platform.name }})
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -99,10 +140,26 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'timbrapp ${{ github.ref_name }}'
-          releaseBody: |
-            See `CHANGELOG.md` for details. Installers below are built from this tag.
-          releaseDraft: true
-          prerelease: false
+          # All matrix jobs upload to the SAME pre-created draft, which
+          # avoids the parallel-create race that would otherwise produce
+          # one draft per platform.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.platform.args }}
+
+  publish-release:
+    name: Publish release
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark release as published + latest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+              draft: false,
+              make_latest: 'true',
+            });
+            core.notice('Release published and marked latest.');
