@@ -17,6 +17,11 @@ apple.txt
 *.pfx
 *.cer
 *.certSigningRequest
+# App Store Connect API keys (private)
+AuthKey_*.p8
+*.p8
+*.mobileprovision
+*.provisionprofile
 
 # Tauri (Rust shell)
 src-tauri/target/
