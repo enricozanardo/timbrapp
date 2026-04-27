@@ -38,6 +38,7 @@
 	"bundle": {
 		"active": true,
 		"targets": "all",
+		"createUpdaterArtifacts": true,
 		"category": "Productivity",
 		"shortDescription": "Apply PNG stamps and signatures to PDF files",
 		"longDescription": "timbrapp is a small offline desktop app to apply reusable PNG stamps or signatures to PDF documents. Drag a PDF in, place a stamp from your saved library, and export a stamped copy.",
