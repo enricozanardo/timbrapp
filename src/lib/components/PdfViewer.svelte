@@ -3,9 +3,11 @@
 	import PdfPage from './PdfPage.svelte';
 
 	function onBackgroundClick(e: MouseEvent) {
-		// Click on empty viewer area: deselect the current placement.
+		// Click on empty viewer area (not on a page): deselect any selected
+		// placement AND exit placement mode so the cursor goes back to default.
 		if (e.target === e.currentTarget) {
 			editor.selectPlacement(null);
+			editor.selectStamp(null);
 		}
 	}
 </script>

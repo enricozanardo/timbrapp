@@ -2,9 +2,14 @@
 	import { editor } from '$lib/stores/editor.svelte';
 	import { addStamp, deleteStamp } from '$lib/db/stampStore';
 	import { getStampUrl, releaseStampUrl } from '$lib/stamps/objectUrl';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	let inputEl: HTMLInputElement;
 	let uploadError = $state<string | null>(null);
+	let pendingDeleteId = $state<string | null>(null);
+	const pendingStamp = $derived(
+		pendingDeleteId ? editor.stamps.find((s) => s.id === pendingDeleteId) ?? null : null
+	);
 
 	async function onUpload(e: Event) {
 		uploadError = null;
@@ -24,11 +29,21 @@
 		}
 	}
 
-	async function onDelete(stampId: string) {
-		if (!confirm('Remove this stamp from your library?')) return;
-		releaseStampUrl(stampId);
-		await deleteStamp(stampId);
+	function askDelete(stampId: string) {
+		pendingDeleteId = stampId;
+	}
+
+	async function confirmDelete() {
+		const id = pendingDeleteId;
+		pendingDeleteId = null;
+		if (!id) return;
+		releaseStampUrl(id);
+		await deleteStamp(id);
 		await editor.refreshStamps();
+	}
+
+	function cancelDelete() {
+		pendingDeleteId = null;
 	}
 
 	function onSelect(stampId: string) {
@@ -75,7 +90,7 @@
 							type="button"
 							class="icon"
 							aria-label="Delete stamp"
-							onclick={() => onDelete(stamp.id)}
+							onclick={() => askDelete(stamp.id)}
 						>
 							×
 						</button>
@@ -96,6 +111,18 @@
 		</p>
 	{/if}
 </aside>
+
+<ConfirmDialog
+	open={pendingDeleteId !== null}
+	title="Delete stamp from library?"
+	message={pendingStamp
+		? `“${pendingStamp.name}” will be removed permanently. Any placements of this stamp on the current PDF will also be removed.`
+		: ''}
+	confirmLabel="Delete"
+	danger
+	onConfirm={confirmDelete}
+	onCancel={cancelDelete}
+/>
 
 <style>
 	.library {

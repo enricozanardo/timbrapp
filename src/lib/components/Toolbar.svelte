@@ -1,9 +1,15 @@
 <script lang="ts">
 	import { editor } from '$lib/stores/editor.svelte';
 	import { buildStampedPdf, downloadPdf, stampedFilename } from '$lib/pdf/save';
+	import ConfirmDialog from './ConfirmDialog.svelte';
+	import AboutDialog from './AboutDialog.svelte';
 
 	let saving = $state(false);
 	let saveError = $state<string | null>(null);
+
+	type PendingPrompt = 'clear' | 'close' | null;
+	let pending = $state<PendingPrompt>(null);
+	let aboutOpen = $state(false);
 
 	async function onSave() {
 		if (!editor.pdfBytes) return;
@@ -23,14 +29,28 @@
 		}
 	}
 
-	function onClose() {
-		if (
-			editor.placements.length > 0 &&
-			!confirm('Close the current PDF and discard placed stamps?')
-		) {
+	function askClose() {
+		// If there's nothing to lose, just close immediately.
+		if (editor.placements.length === 0) {
+			editor.closePdf();
 			return;
 		}
-		editor.closePdf();
+		pending = 'close';
+	}
+
+	function askClear() {
+		if (editor.placements.length === 0) return;
+		pending = 'clear';
+	}
+
+	function onConfirm() {
+		if (pending === 'clear') editor.clearPlacements();
+		if (pending === 'close') editor.closePdf();
+		pending = null;
+	}
+
+	function onCancel() {
+		pending = null;
 	}
 
 	function zoomOut() {
@@ -43,10 +63,8 @@
 		editor.scale = 1.5;
 	}
 
-	function onClear() {
-		if (editor.placements.length === 0) return;
-		if (!confirm('Remove all placed stamps?')) return;
-		editor.clearPlacements();
+	function stopPlacing() {
+		editor.selectStamp(null);
 	}
 </script>
 
@@ -56,6 +74,12 @@
 		{#if editor.pdfFileName}
 			<span class="file" title={editor.pdfFileName}>· {editor.pdfFileName}</span>
 			<span class="badge">{editor.pages.length} pages · {editor.placements.length} stamps</span>
+		{/if}
+		{#if editor.selectedStampId && editor.hasPdf}
+			<button type="button" class="placing-pill" onclick={stopPlacing} title="Press Esc to cancel">
+				<span class="dot"></span>
+				Placing — click to stop
+			</button>
 		{/if}
 	</div>
 
@@ -69,10 +93,10 @@
 				<button type="button" class="btn" onclick={zoomIn} aria-label="Zoom in">+</button>
 			</div>
 
-			<button type="button" class="btn" onclick={onClear} disabled={editor.placements.length === 0}>
+			<button type="button" class="btn" onclick={askClear} disabled={editor.placements.length === 0}>
 				Clear stamps
 			</button>
-			<button type="button" class="btn" onclick={onClose}>Close PDF</button>
+			<button type="button" class="btn" onclick={askClose}>Close PDF</button>
 			<button
 				type="button"
 				class="btn primary"
@@ -82,12 +106,44 @@
 				{saving ? 'Saving…' : 'Download stamped PDF'}
 			</button>
 		{/if}
+
+		<button
+			type="button"
+			class="btn ghost"
+			onclick={() => (aboutOpen = true)}
+			aria-label="About timbrapp"
+			title="About timbrapp"
+		>
+			About
+		</button>
 	</div>
 
 	{#if saveError}
 		<div class="error" role="alert">{saveError}</div>
 	{/if}
 </header>
+
+<ConfirmDialog
+	open={pending === 'clear'}
+	title="Clear all placed stamps?"
+	message="This removes every stamp you've placed on the current PDF. The original document is untouched."
+	confirmLabel="Clear stamps"
+	danger
+	{onConfirm}
+	{onCancel}
+/>
+
+<ConfirmDialog
+	open={pending === 'close'}
+	title="Close the current PDF?"
+	message="You have placed stamps that haven't been saved. They will be discarded."
+	confirmLabel="Close without saving"
+	danger
+	{onConfirm}
+	{onCancel}
+/>
+
+<AboutDialog open={aboutOpen} onClose={() => (aboutOpen = false)} />
 
 <style>
 	.toolbar {
@@ -126,6 +182,38 @@
 		border-radius: 999px;
 		padding: 0.15rem 0.5rem;
 	}
+	.placing-pill {
+		appearance: none;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.78rem;
+		color: #1d4ed8;
+		background: #dbeafe;
+		border: 1px solid #93c5fd;
+		border-radius: 999px;
+		padding: 0.2rem 0.6rem;
+		cursor: pointer;
+	}
+	.placing-pill:hover {
+		background: #bfdbfe;
+	}
+	.placing-pill .dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: #2563eb;
+		animation: pulse 1.2s ease-in-out infinite;
+	}
+	@keyframes pulse {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.4;
+		}
+	}
 	.btn {
 		appearance: none;
 		border: 1px solid var(--border, #cbd5e1);
@@ -150,6 +238,15 @@
 	}
 	.btn.primary:hover:not(:disabled) {
 		background: #1d4ed8;
+	}
+	.btn.ghost {
+		background: transparent;
+		color: #475569;
+		border-color: transparent;
+	}
+	.btn.ghost:hover:not(:disabled) {
+		background: #f1f5f9;
+		color: #0f172a;
 	}
 	.zoom {
 		display: inline-flex;

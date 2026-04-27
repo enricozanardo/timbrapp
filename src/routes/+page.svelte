@@ -14,7 +14,26 @@
 		await editor.refreshStamps();
 		booted = true;
 	});
+
+	function onKeydown(e: KeyboardEvent) {
+		if (e.key !== 'Escape') return;
+		// Don't steal Escape from input fields…
+		const target = e.target as HTMLElement | null;
+		if (target) {
+			const tag = target.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
+		}
+		// …or from an open modal/dialog (Modal handles its own Esc).
+		if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+		// Exit placement mode and clear placement selection in one shot.
+		if (editor.selectedStampId || editor.selectedPlacementId) {
+			editor.selectStamp(null);
+			editor.selectPlacement(null);
+		}
+	}
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <svelte:head>
 	<title>timbrapp — PDF stamping</title>
