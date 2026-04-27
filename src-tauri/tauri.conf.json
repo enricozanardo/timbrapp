@@ -1,7 +1,7 @@
 {
 	"$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
 	"productName": "timbrapp",
-	"version": "0.1.3",
+	"version": "0.1.4",
 	"identifier": "app.timbrapp.timbrapp",
 	"build": {
 		"frontendDist": "../build",
@@ -25,6 +25,14 @@
 		],
 		"security": {
 			"csp": null
+		}
+	},
+	"plugins": {
+		"updater": {
+			"endpoints": [
+				"https://github.com/enricozanardo/timbrapp/releases/latest/download/latest.json"
+			],
+			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZGOTlBM0Q5NUE2MzdFMDgKUldRSWZtTmEyYU9aLzZNbU1oMW1vd1ZqY2t3RGhVVkhUNWJidE5WUG10c05nd3FiSzk0d2U5bzcK"
 		}
 	},
 	"bundle": {

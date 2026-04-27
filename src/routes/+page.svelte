@@ -6,6 +6,7 @@
 	import PdfViewer from '$lib/components/PdfViewer.svelte';
 	import PdfDropzone from '$lib/components/PdfDropzone.svelte';
 	import Toolbar from '$lib/components/Toolbar.svelte';
+	import UpdateChecker from '$lib/components/UpdateChecker.svelte';
 
 	let booted = $state(false);
 
@@ -58,6 +59,8 @@
 		{/if}
 	</div>
 </div>
+
+<UpdateChecker />
 
 <style>
 	.app {

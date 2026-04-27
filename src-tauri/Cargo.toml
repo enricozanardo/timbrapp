@@ -1,6 +1,6 @@
 [package]
 name = "timbrapp"
-version = "0.1.3"
+version = "0.1.4"
 description = "Apply PNG stamps and signatures to PDF documents."
 authors = ["timbrapp contributors"]
 license = "MIT"
@@ -21,3 +21,5 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
