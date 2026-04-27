@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Modal from './Modal.svelte';
 	import { APP_VERSION } from '$lib/version';
+	import { updater, isTauri } from '$lib/stores/updater.svelte';
 
 	type Props = {
 		open: boolean;
@@ -8,6 +9,23 @@
 	};
 
 	let { open, onClose }: Props = $props();
+
+	const tauri = isTauri();
+
+	/**
+	 * Manual "Check for updates". Pass `respectDismiss = false` so the
+	 * banner appears again even for a release the user previously hit
+	 * "Later" on — they explicitly asked.
+	 */
+	async function manualCheck() {
+		await updater.check(false);
+		// If the manual check found an update, close the About dialog so
+		// the bottom-right banner is visible and clickable. Otherwise we
+		// leave About open and the inline status row updates in place.
+		if (updater.state.kind === 'available') onClose();
+	}
+
+	const statusKind = $derived(updater.state.kind);
 </script>
 
 <Modal {open} title="About timbrapp" {onClose}>
@@ -39,6 +57,41 @@
 			<dt>License</dt>
 			<dd>MIT</dd>
 		</dl>
+
+		{#if tauri}
+			<section class="updater">
+				<div class="row">
+					<button
+						type="button"
+						class="btn"
+						onclick={manualCheck}
+						disabled={statusKind === 'checking' || statusKind === 'installing'}
+					>
+						{#if statusKind === 'checking'}
+							Checking…
+						{:else if statusKind === 'installing'}
+							Installing…
+						{:else}
+							Check for updates
+						{/if}
+					</button>
+
+					{#if statusKind === 'up-to-date'}
+						<span class="status ok" role="status">
+							You're on the latest version.
+						</span>
+					{:else if statusKind === 'error'}
+						<span class="status err" role="status" title={updater.state.kind === 'error'
+							? updater.state.message
+							: ''}>Check failed — try again later.</span>
+					{:else if statusKind === 'available' && updater.state.kind === 'available'}
+						<span class="status info" role="status">
+							v{updater.state.version} ready to install.
+						</span>
+					{/if}
+				</div>
+			</section>
+		{/if}
 
 		<p class="credits">
 			Built with <a href="https://svelte.dev/" target="_blank" rel="noopener">Svelte 5</a>,
@@ -87,6 +140,32 @@
 		font-size: 0.85rem;
 		user-select: all;
 	}
+	.updater {
+		margin: 0 0 1rem;
+		padding: 0.6rem 0.7rem;
+		background: #f8fafc;
+		border: 1px solid #e2e8f0;
+		border-radius: 6px;
+	}
+	.row {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		flex-wrap: wrap;
+	}
+	.status {
+		font-size: 0.85rem;
+	}
+	.status.ok {
+		color: #166534;
+	}
+	.status.err {
+		color: #991b1b;
+	}
+	.status.info {
+		color: #1d4ed8;
+		font-weight: 500;
+	}
 	.credits {
 		margin: 0;
 		font-size: 0.8rem;
@@ -105,6 +184,10 @@
 		font-size: 0.9rem;
 		cursor: pointer;
 		color: #1e293b;
+	}
+	.btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 	.btn.primary {
 		background: #2563eb;

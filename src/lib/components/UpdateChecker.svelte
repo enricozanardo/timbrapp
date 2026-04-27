@@ -2,161 +2,68 @@
 	/**
 	 * UpdateChecker
 	 *
-	 * Tauri-only auto-updater for the desktop builds. Hits the GitHub
-	 * Releases-hosted `latest.json` on startup, and if a newer version is
-	 * available shows a non-blocking banner at the bottom-right with
-	 * "Install" and "Later" actions. Pressing Install runs the
-	 * download-verify-replace flow, then relaunches the app.
+	 * Tauri-only auto-updater renderer. Subscribes to the shared `updater`
+	 * store and shows:
+	 *   - a non-blocking bottom-right banner when an update is available,
+	 *   - a modal with progress while the download runs,
+	 *   - an error modal if anything fails.
 	 *
-	 * The component is a no-op in the web build: when the runtime isn't
-	 * Tauri (no `__TAURI_INTERNALS__` global) we skip the check entirely
-	 * and never import the plugins, so the resulting JS chunk is small.
+	 * The actual check + install logic lives in `stores/updater.svelte.ts`
+	 * so the About dialog can drive the same state machine from a manual
+	 * "Check for updates" button.
 	 *
-	 * Per-version dismissal is persisted in localStorage so users who
-	 * click "Later" aren't nagged for the same release.
+	 * In the web build (`__TAURI_INTERNALS__` absent) the auto-check is a
+	 * no-op and the store stays in `idle`, so this whole component
+	 * renders nothing.
 	 */
 	import { onMount } from 'svelte';
 	import Modal from './Modal.svelte';
-
-	type CheckState =
-		| { kind: 'idle' }
-		| { kind: 'available'; version: string; notes: string | null }
-		| {
-				kind: 'installing';
-				version: string;
-				downloaded: number;
-				total: number | null;
-		  }
-		| { kind: 'restarting'; version: string }
-		| { kind: 'error'; message: string };
-
-	let state = $state<CheckState>({ kind: 'idle' });
-
-	const DISMISS_KEY = 'timbrapp.updater.dismissed.version';
-
-	function isTauri(): boolean {
-		return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-	}
-
-	function dismissedVersion(): string | null {
-		try {
-			return localStorage.getItem(DISMISS_KEY);
-		} catch {
-			return null;
-		}
-	}
-
-	function rememberDismiss(version: string) {
-		try {
-			localStorage.setItem(DISMISS_KEY, version);
-		} catch {
-			// localStorage disabled — silently accept that we'll re-prompt next launch.
-		}
-	}
-
-	async function checkForUpdate() {
-		if (!isTauri()) return;
-		try {
-			const { check } = await import('@tauri-apps/plugin-updater');
-			const update = await check();
-			if (!update) return;
-			if (dismissedVersion() === update.version) return;
-			state = {
-				kind: 'available',
-				version: update.version,
-				notes: update.body ?? null
-			};
-		} catch (err) {
-			// Network outage, missing manifest, malformed signature — all
-			// non-critical. We log and stay silent so the user isn't pestered.
-			console.warn('[updater] check failed:', err);
-		}
-	}
-
-	async function install() {
-		if (state.kind !== 'available') return;
-		const targetVersion = state.version;
-		state = { kind: 'installing', version: targetVersion, downloaded: 0, total: null };
-		try {
-			const { check } = await import('@tauri-apps/plugin-updater');
-			const { relaunch } = await import('@tauri-apps/plugin-process');
-			const update = await check();
-			if (!update) {
-				state = { kind: 'error', message: 'Update disappeared between check and install.' };
-				return;
-			}
-			await update.downloadAndInstall((event) => {
-				if (state.kind !== 'installing') return;
-				if (event.event === 'Started') {
-					state = { ...state, total: event.data.contentLength ?? null };
-				} else if (event.event === 'Progress') {
-					state = { ...state, downloaded: state.downloaded + event.data.chunkLength };
-				}
-			});
-			state = { kind: 'restarting', version: targetVersion };
-			await relaunch();
-		} catch (err) {
-			state = {
-				kind: 'error',
-				message: err instanceof Error ? err.message : String(err)
-			};
-		}
-	}
-
-	function later() {
-		if (state.kind === 'available') {
-			rememberDismiss(state.version);
-		}
-		state = { kind: 'idle' };
-	}
-
-	function closeError() {
-		state = { kind: 'idle' };
-	}
+	import { updater } from '$lib/stores/updater.svelte';
 
 	const progressPct = $derived.by(() => {
-		if (state.kind !== 'installing') return null;
-		if (!state.total || state.total <= 0) return null;
-		return Math.min(100, Math.round((state.downloaded / state.total) * 100));
+		const s = updater.state;
+		if (s.kind !== 'installing') return null;
+		if (!s.total || s.total <= 0) return null;
+		return Math.min(100, Math.round((s.downloaded / s.total) * 100));
 	});
 
 	onMount(() => {
 		// Wait a beat so we don't compete with first paint or the
 		// IndexedDB seed for cycles. 3s is enough for the editor to be
 		// fully rendered and interactive.
-		const t = setTimeout(checkForUpdate, 3000);
+		const t = setTimeout(() => updater.check(true), 3000);
 		return () => clearTimeout(t);
 	});
 </script>
 
-{#if state.kind === 'available'}
+{#if updater.state.kind === 'available'}
 	<aside class="banner" role="status" aria-live="polite">
 		<div class="content">
 			<strong>Update available</strong>
-			<span class="versions">v{state.version}</span>
-			{#if state.notes}
-				<p class="notes">{state.notes}</p>
+			<span class="versions">v{updater.state.version}</span>
+			{#if updater.state.notes}
+				<p class="notes">{updater.state.notes}</p>
 			{/if}
 		</div>
 		<div class="actions">
-			<button type="button" class="btn ghost" onclick={later}>Later</button>
-			<button type="button" class="btn primary" onclick={install}>Install</button>
+			<button type="button" class="btn ghost" onclick={() => updater.dismiss()}>Later</button>
+			<button type="button" class="btn primary" onclick={() => updater.install()}>Install</button>
 		</div>
 	</aside>
 {/if}
 
 <Modal
-	open={state.kind === 'installing' || state.kind === 'restarting'}
-	title={state.kind === 'restarting' ? 'Restarting…' : 'Installing update'}
+	open={updater.state.kind === 'installing' || updater.state.kind === 'restarting'}
+	title={updater.state.kind === 'restarting' ? 'Restarting…' : 'Installing update'}
 	onClose={() => {
 		/* noop while installing — user can't cancel mid-flight */
 	}}
 	dismissOnBackdrop={false}
 >
 	{#snippet body()}
-		{#if state.kind === 'installing'}
+		{#if updater.state.kind === 'installing'}
 			<p>
-				Downloading <strong>v{state.version}</strong>… The app will restart automatically when
+				Downloading <strong>v{updater.state.version}</strong>… The app will restart automatically when
 				the install finishes.
 			</p>
 			<div class="bar" aria-label="Download progress">
@@ -169,35 +76,41 @@
 				></div>
 			</div>
 			<p class="bytes">
-				{(state.downloaded / 1024 / 1024).toFixed(1)} MB
-				{state.total ? `/ ${(state.total / 1024 / 1024).toFixed(1)} MB` : 'downloaded'}
+				{(updater.state.downloaded / 1024 / 1024).toFixed(1)} MB
+				{updater.state.total
+					? `/ ${(updater.state.total / 1024 / 1024).toFixed(1)} MB`
+					: 'downloaded'}
 			</p>
-		{:else if state.kind === 'restarting'}
-			<p>Update v{state.version} installed. Relaunching timbrapp…</p>
+		{:else if updater.state.kind === 'restarting'}
+			<p>Update v{updater.state.version} installed. Relaunching timbrapp…</p>
 		{/if}
 	{/snippet}
 </Modal>
 
 <Modal
-	open={state.kind === 'error'}
+	open={updater.state.kind === 'error'}
 	title="Update failed"
-	onClose={closeError}
+	onClose={() => updater.close()}
 >
 	{#snippet body()}
-		{#if state.kind === 'error'}
+		{#if updater.state.kind === 'error'}
 			<p>The update couldn't be installed:</p>
-			<pre class="err">{state.message}</pre>
+			<pre class="err">{updater.state.message}</pre>
 			<p class="subtle">
-				You can keep using this version. Try again from the next app launch, or
-				download the latest installer from the
-				<a href="https://github.com/enricozanardo/timbrapp/releases/latest" target="_blank" rel="noopener">
+				You can keep using this version. Try again from the About dialog, or download
+				the latest installer from the
+				<a
+					href="https://github.com/enricozanardo/timbrapp/releases/latest"
+					target="_blank"
+					rel="noopener"
+				>
 					releases page
 				</a>.
 			</p>
 		{/if}
 	{/snippet}
 	{#snippet footer()}
-		<button type="button" class="btn primary" onclick={closeError}>Close</button>
+		<button type="button" class="btn primary" onclick={() => updater.close()}>Close</button>
 	{/snippet}
 </Modal>
 
