@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { isTauri } from '@tauri-apps/api/core';
+	import { open } from '@tauri-apps/plugin-dialog';
+	import { readFile } from '@tauri-apps/plugin-fs';
 	import { editor } from '$lib/stores/editor.svelte';
 
 	let dragOver = $state(false);
@@ -44,8 +46,6 @@
 	 */
 	async function onChoosePdf() {
 		if (isTauri()) {
-			const { open } = await import('@tauri-apps/plugin-dialog');
-			const { readFile } = await import('@tauri-apps/plugin-fs');
 			const path = await open({
 				multiple: false,
 				filters: [{ name: 'PDF', extensions: ['pdf'] }]

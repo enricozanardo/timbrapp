@@ -1,5 +1,7 @@
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // v0.1.6: replaced broken <input type="file"> pickers with tauri-plugin-dialog
+  // so the native OS file chooser is used directly on all platforms.
   tauri::Builder::default()
     // Updater + process: lets the app check GitHub Releases for newer
     // versions, download and verify the signed update, then relaunch.

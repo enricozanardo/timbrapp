@@ -115,6 +115,13 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # Force a complete Rust recompile so the new SvelteKit frontend bundle
+      # (with the tauri-plugin-dialog fix) is actually embedded in the binary.
+      # Without this, swatinem/rust-cache can restore pre-compiled objects that
+      # still have the old frontend embedded via include_dir!/build.rs macros.
+      - name: Clean Rust build artifacts
+        run: cargo clean --manifest-path src-tauri/Cargo.toml
+
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:
