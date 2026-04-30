@@ -5,6 +5,11 @@ pub fn run() {
     // versions, download and verify the signed update, then relaunch.
     .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_process::init())
+    // Native file dialogs — replaces the broken WebView-based <input type="file">
+    // picker that shows a white window on Linux due to a WRY/WebKit2GTK bug where
+    // child WebViews don't inherit custom URI scheme handlers.
+    .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_fs::init())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

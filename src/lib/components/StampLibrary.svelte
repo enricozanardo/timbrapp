@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isTauri } from '@tauri-apps/api/core';
 	import { editor } from '$lib/stores/editor.svelte';
 	import { addStamp, deleteStamp } from '$lib/db/stampStore';
 	import { getStampUrl, releaseStampUrl } from '$lib/stamps/objectUrl';
@@ -11,6 +12,17 @@
 		pendingDeleteId ? editor.stamps.find((s) => s.id === pendingDeleteId) ?? null : null
 	);
 
+	/** Shared logic: persist a PNG blob and refresh the stamp list. */
+	async function processStampBlob(blob: Blob, filename: string) {
+		if (blob.type && blob.type !== 'image/png') {
+			throw new Error('Only PNG images are supported');
+		}
+		const name = filename.replace(/\.png$/i, '') || 'stamp';
+		await addStamp(name, blob);
+		await editor.refreshStamps();
+	}
+
+	/** Web / dev-mode handler: called when the hidden <input type="file"> changes. */
 	async function onUpload(e: Event) {
 		uploadError = null;
 		const t = e.currentTarget as HTMLInputElement;
@@ -18,12 +30,39 @@
 		t.value = '';
 		if (!file) return;
 		try {
-			if (file.type && file.type !== 'image/png') {
-				throw new Error('Only PNG images are supported');
+			await processStampBlob(file, file.name);
+		} catch (err) {
+			uploadError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	/**
+	 * On Tauri desktop, use the native OS file picker via plugin-dialog.
+	 * This bypasses the WebKit <input type="file"> which opens a broken
+	 * child WebView window (white screen) on Linux due to a WRY bug where
+	 * new WebViews don't inherit the tauri:// custom URI scheme handler.
+	 */
+	async function onAddStamp() {
+		uploadError = null;
+		try {
+			if (isTauri()) {
+				const { open } = await import('@tauri-apps/plugin-dialog');
+				const { readFile } = await import('@tauri-apps/plugin-fs');
+				const path = await open({
+					multiple: false,
+					filters: [{ name: 'PNG Image', extensions: ['png'] }]
+				});
+				if (!path || typeof path !== 'string') return;
+				const bytes = await readFile(path);
+				const filename = path.split(/[\\/]/).pop() ?? 'stamp.png';
+				await processStampBlob(
+					new File([bytes], filename, { type: 'image/png' }),
+					filename
+				);
+			} else {
+				// Web / dev mode: fall back to the hidden file input.
+				inputEl.click();
 			}
-			const name = file.name.replace(/\.(png)$/i, '') || 'stamp';
-			await addStamp(name, file);
-			await editor.refreshStamps();
 		} catch (err) {
 			uploadError = err instanceof Error ? err.message : String(err);
 		}
@@ -54,7 +93,8 @@
 <aside class="library" aria-label="Stamp library">
 	<header>
 		<h2>Stamps</h2>
-		<button type="button" class="btn" onclick={() => inputEl.click()}>+ Add PNG</button>
+		<button type="button" class="btn" onclick={onAddStamp}>+ Add PNG</button>
+		<!-- Fallback for web/dev mode only; Tauri uses plugin-dialog above -->
 		<input
 			bind:this={inputEl}
 			type="file"

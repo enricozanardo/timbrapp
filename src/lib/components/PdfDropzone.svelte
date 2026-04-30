@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isTauri } from '@tauri-apps/api/core';
 	import { editor } from '$lib/stores/editor.svelte';
 
 	let dragOver = $state(false);
@@ -34,6 +35,30 @@
 		void handleFile(t.files?.[0]);
 		t.value = '';
 	}
+
+	/**
+	 * On Tauri desktop, use the native OS file picker via plugin-dialog.
+	 * This bypasses the WebKit <input type="file"> which opens a broken
+	 * child WebView window (white screen) on Linux due to a WRY bug where
+	 * new WebViews don't inherit the tauri:// custom URI scheme handler.
+	 */
+	async function onChoosePdf() {
+		if (isTauri()) {
+			const { open } = await import('@tauri-apps/plugin-dialog');
+			const { readFile } = await import('@tauri-apps/plugin-fs');
+			const path = await open({
+				multiple: false,
+				filters: [{ name: 'PDF', extensions: ['pdf'] }]
+			});
+			if (!path || typeof path !== 'string') return;
+			const bytes = await readFile(path);
+			const name = path.split(/[\\/]/).pop() ?? 'document.pdf';
+			await handleFile(new File([bytes], name, { type: 'application/pdf' }));
+		} else {
+			// Web / dev mode: fall back to the hidden file input.
+			inputEl.click();
+		}
+	}
 </script>
 
 <div
@@ -62,9 +87,10 @@
 		</svg>
 		<p class="title">Drop a PDF here</p>
 		<p class="subtitle">or</p>
-		<button type="button" class="btn primary" onclick={() => inputEl.click()}>
+		<button type="button" class="btn primary" onclick={onChoosePdf}>
 			Choose PDF file
 		</button>
+		<!-- Fallback for web/dev mode only; Tauri uses plugin-dialog above -->
 		<input
 			bind:this={inputEl}
 			type="file"
