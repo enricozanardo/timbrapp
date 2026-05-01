@@ -1,72 +1,77 @@
 <script lang="ts">
-	import { isTauri } from '@tauri-apps/api/core';
-	import { open } from '@tauri-apps/plugin-dialog';
-	import { readFile } from '@tauri-apps/plugin-fs';
+	import { onMount, onDestroy } from 'svelte';
+	import { invoke } from '@tauri-apps/api/core';
+	import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 	import { editor } from '$lib/stores/editor.svelte';
 	import { addStamp, deleteStamp } from '$lib/db/stampStore';
 	import { getStampUrl, releaseStampUrl } from '$lib/stamps/objectUrl';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
-	let inputEl: HTMLInputElement;
+	let dragOver = $state(false);
+	let showHint = $state(false);
 	let uploadError = $state<string | null>(null);
 	let pendingDeleteId = $state<string | null>(null);
 	const pendingStamp = $derived(
 		pendingDeleteId ? editor.stamps.find((s) => s.id === pendingDeleteId) ?? null : null
 	);
+	let unlisten: (() => void) | undefined;
 
-	/** Shared logic: persist a PNG blob and refresh the stamp list. */
-	async function processStampBlob(blob: Blob, filename: string) {
-		if (blob.type && blob.type !== 'image/png') {
-			throw new Error('Only PNG images are supported');
-		}
-		const name = filename.replace(/\.png$/i, '') || 'stamp';
-		await addStamp(name, blob);
-		await editor.refreshStamps();
-	}
-
-	/** Web / dev-mode handler: called when the hidden <input type="file"> changes. */
-	async function onUpload(e: Event) {
+	async function addPngFile(file: File) {
 		uploadError = null;
-		const t = e.currentTarget as HTMLInputElement;
-		const file = t.files?.[0];
-		t.value = '';
-		if (!file) return;
+		showHint = false;
 		try {
-			await processStampBlob(file, file.name);
-		} catch (err) {
-			uploadError = err instanceof Error ? err.message : String(err);
-		}
-	}
-
-	/**
-	 * On Tauri desktop, use the native OS file picker via plugin-dialog.
-	 * This bypasses the WebKit <input type="file"> which opens a broken
-	 * child WebView window (white screen) on Linux due to a WRY bug where
-	 * new WebViews don't inherit the tauri:// custom URI scheme handler.
-	 */
-	async function onAddStamp() {
-		uploadError = null;
-		try {
-		if (isTauri()) {
-			const path = await open({
-					multiple: false,
-					filters: [{ name: 'PNG Image', extensions: ['png'] }]
-				});
-				if (!path || typeof path !== 'string') return;
-				const bytes = await readFile(path);
-				const filename = path.split(/[\\/]/).pop() ?? 'stamp.png';
-				await processStampBlob(
-					new File([bytes], filename, { type: 'image/png' }),
-					filename
-				);
-			} else {
-				// Web / dev mode: fall back to the hidden file input.
-				inputEl.click();
+			if (file.type && file.type !== 'image/png') {
+				throw new Error('Only PNG images are supported');
 			}
+			const name = file.name.replace(/\.png$/i, '') || 'stamp';
+			await addStamp(name, file);
+			await editor.refreshStamps();
 		} catch (err) {
 			uploadError = err instanceof Error ? err.message : String(err);
 		}
 	}
+
+	async function addPngFromPath(path: string) {
+		try {
+			type FD = { name: string; data: number[] };
+			const fd = await invoke<FD>('read_file', { path });
+			await addPngFile(new File([new Uint8Array(fd.data)], fd.name, { type: 'image/png' }));
+		} catch (err) {
+			uploadError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	// Tauri v2 intercepts cross-app file drops before they reach the JS DOM.
+	onMount(async () => {
+		const win = getCurrentWebviewWindow();
+		unlisten = await win.onDragDropEvent((event) => {
+			const payload = event.payload as { type: string; paths?: string[] };
+			if (payload.type === 'enter' || payload.type === 'over') {
+				if (payload.paths?.some(p => p.toLowerCase().endsWith('.png'))) {
+					dragOver = true;
+				}
+			} else if (payload.type === 'leave') {
+				dragOver = false;
+			} else if (payload.type === 'drop') {
+				dragOver = false;
+				showHint = false;
+				const pngPath = payload.paths?.find(p => p.toLowerCase().endsWith('.png'));
+				if (pngPath) void addPngFromPath(pngPath);
+			}
+		});
+	});
+
+	onDestroy(() => unlisten?.());
+
+	// DOM fallback for in-browser dev mode.
+	function onDrop(e: DragEvent) {
+		e.preventDefault();
+		dragOver = false;
+		const file = e.dataTransfer?.files?.[0];
+		if (file) void addPngFile(file);
+	}
+	function onDragOver(e: DragEvent) { e.preventDefault(); dragOver = true; }
+	function onDragLeave() { dragOver = false; }
 
 	function askDelete(stampId: string) {
 		pendingDeleteId = stampId;
@@ -88,21 +93,35 @@
 	function onSelect(stampId: string) {
 		editor.selectStamp(editor.selectedStampId === stampId ? null : stampId);
 	}
+
+	/** Opens Thunar so the user can drag a PNG stamp into this panel. */
+	async function onAddStamp() {
+		uploadError = null;
+		try {
+			await invoke('open_file_manager');
+			showHint = true;
+		} catch (err) {
+			uploadError = err instanceof Error ? err.message : String(err);
+		}
+	}
 </script>
 
-<aside class="library" aria-label="Stamp library">
+<aside
+	class="library"
+	class:drag-over={dragOver}
+	aria-label="Stamp library"
+	ondrop={onDrop}
+	ondragover={onDragOver}
+	ondragleave={onDragLeave}
+>
 	<header>
 		<h2>Stamps</h2>
 		<button type="button" class="btn" onclick={onAddStamp}>+ Add PNG</button>
-		<!-- Fallback for web/dev mode only; Tauri uses plugin-dialog above -->
-		<input
-			bind:this={inputEl}
-			type="file"
-			accept="image/png,.png"
-			onchange={onUpload}
-			hidden
-		/>
 	</header>
+
+	{#if showHint}
+		<p class="hint-drag">Thunar is open — drag a PNG here ⇓</p>
+	{/if}
 
 	{#if uploadError}
 		<p class="error">{uploadError}</p>
@@ -288,5 +307,21 @@
 	}
 	.icon:hover {
 		color: #b91c1c;
+	}
+	.library.drag-over {
+		background: #eff6ff;
+		border-right-color: var(--accent, #2563eb);
+		outline: 2px dashed var(--accent, #2563eb);
+		outline-offset: -4px;
+	}
+	.hint-drag {
+		padding: 0.4rem 0.75rem;
+		border-radius: 6px;
+		background: #eff6ff;
+		color: #1d4ed8;
+		font-size: 0.8rem;
+		font-weight: 500;
+		border: 1px solid #bfdbfe;
+		margin: 0;
 	}
 </style>
