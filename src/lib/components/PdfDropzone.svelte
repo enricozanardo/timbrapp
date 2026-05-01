@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { isTauri } from '@tauri-apps/api/core';
-	import { open } from '@tauri-apps/plugin-dialog';
-	import { readFile } from '@tauri-apps/plugin-fs';
+	import { onMount, onDestroy } from 'svelte';
+	import { invoke } from '@tauri-apps/api/core';
+	import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 	import { editor } from '$lib/stores/editor.svelte';
 
 	let dragOver = $state(false);
-	let inputEl: HTMLInputElement;
+	let showHint = $state(false);
+	let unlisten: (() => void) | undefined;
 
 	async function handleFile(file: File | null | undefined) {
 		if (!file) return;
@@ -13,50 +14,60 @@
 			editor.loadError = `Expected a PDF, got ${file.type || 'unknown'}`;
 			return;
 		}
+		showHint = false;
 		await editor.loadPdfFromFile(file);
 	}
 
+	async function loadFromPath(path: string) {
+		try {
+			type FD = { name: string; data: number[] };
+			const fd = await invoke<FD>('read_file', { path });
+			await handleFile(new File([new Uint8Array(fd.data)], fd.name, { type: 'application/pdf' }));
+		} catch (err) {
+			editor.loadError = String(err);
+		}
+	}
+
+	// Tauri v2 intercepts cross-app file drops before they reach the JS DOM,
+	// so we use onDragDropEvent instead of the ondrop attribute.
+	onMount(async () => {
+		const win = getCurrentWebviewWindow();
+		unlisten = await win.onDragDropEvent((event) => {
+			const payload = event.payload as { type: string; paths?: string[] };
+			if (payload.type === 'enter' || payload.type === 'over') {
+				if (payload.paths?.some(p => p.toLowerCase().endsWith('.pdf'))) {
+					dragOver = true;
+				}
+			} else if (payload.type === 'leave') {
+				dragOver = false;
+			} else if (payload.type === 'drop') {
+				dragOver = false;
+				showHint = false;
+				const pdfPath = payload.paths?.find(p => p.toLowerCase().endsWith('.pdf'));
+				if (pdfPath) void loadFromPath(pdfPath);
+			}
+		});
+	});
+
+	onDestroy(() => unlisten?.());
+
+	// Keep DOM handlers for in-browser / dev-server fallback.
 	function onDrop(e: DragEvent) {
 		e.preventDefault();
 		dragOver = false;
 		const file = e.dataTransfer?.files?.[0];
-		void handleFile(file);
+		if (file) void handleFile(file);
 	}
+	function onDragOver(e: DragEvent) { e.preventDefault(); dragOver = true; }
+	function onDragLeave() { dragOver = false; }
 
-	function onDragOver(e: DragEvent) {
-		e.preventDefault();
-		dragOver = true;
-	}
-
-	function onDragLeave() {
-		dragOver = false;
-	}
-
-	function onChange(e: Event) {
-		const t = e.currentTarget as HTMLInputElement;
-		void handleFile(t.files?.[0]);
-		t.value = '';
-	}
-
-	/**
-	 * On Tauri desktop, use the native OS file picker via plugin-dialog.
-	 * This bypasses the WebKit <input type="file"> which opens a broken
-	 * child WebView window (white screen) on Linux due to a WRY bug where
-	 * new WebViews don't inherit the tauri:// custom URI scheme handler.
-	 */
+	/** Opens Thunar so the user can drag a PDF into the drop zone. */
 	async function onChoosePdf() {
-		if (isTauri()) {
-			const path = await open({
-				multiple: false,
-				filters: [{ name: 'PDF', extensions: ['pdf'] }]
-			});
-			if (!path || typeof path !== 'string') return;
-			const bytes = await readFile(path);
-			const name = path.split(/[\\/]/).pop() ?? 'document.pdf';
-			await handleFile(new File([bytes], name, { type: 'application/pdf' }));
-		} else {
-			// Web / dev mode: fall back to the hidden file input.
-			inputEl.click();
+		try {
+			await invoke('open_file_manager');
+			showHint = true;
+		} catch (err) {
+			editor.loadError = String(err);
 		}
 	}
 </script>
@@ -90,14 +101,9 @@
 		<button type="button" class="btn primary" onclick={onChoosePdf}>
 			Choose PDF file
 		</button>
-		<!-- Fallback for web/dev mode only; Tauri uses plugin-dialog above -->
-		<input
-			bind:this={inputEl}
-			type="file"
-			accept="application/pdf,.pdf"
-			onchange={onChange}
-			hidden
-		/>
+		{#if showHint}
+			<p class="hint-drag">Thunar is open — drag your PDF here ⇓</p>
+		{/if}
 		{#if editor.loading}
 			<p class="status">Loading PDF…</p>
 		{/if}
@@ -162,5 +168,15 @@
 	.error {
 		margin-top: 1rem;
 		color: #b91c1c;
+	}
+	.hint-drag {
+		margin-top: 0.75rem;
+		padding: 0.5rem 1rem;
+		border-radius: 8px;
+		background: #eff6ff;
+		color: #1d4ed8;
+		font-size: 0.9rem;
+		font-weight: 500;
+		border: 1px solid #bfdbfe;
 	}
 </style>

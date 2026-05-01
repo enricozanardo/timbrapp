@@ -5,4 +5,4 @@
  * `src-tauri/Cargo.toml` when cutting a release. Vite inlines it at build
  * time, so updating it here is enough — no env-var plumbing required.
  */
-export const APP_VERSION = '0.1.6';
+export const APP_VERSION = '0.1.7';
