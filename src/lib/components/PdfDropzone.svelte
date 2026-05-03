@@ -61,11 +61,22 @@
 	function onDragOver(e: DragEvent) { e.preventDefault(); dragOver = true; }
 	function onDragLeave() { dragOver = false; }
 
-	/** Opens Thunar so the user can drag a PDF into the drop zone. */
+	/**
+	 * Cross-platform file picker.
+	 * - Linux: pick_file opens Thunar and returns null → show drag hint.
+	 * - macOS / Windows: pick_file returns file bytes from the native dialog.
+	 */
 	async function onChoosePdf() {
 		try {
-			await invoke('open_file_manager');
-			showHint = true;
+			type Picked = { name: string; data: number[] } | null;
+			const result = await invoke<Picked>('pick_file', { filterType: 'pdf' });
+			if (!result) {
+				// Linux: Thunar was opened — show the drag-and-drop hint
+				showHint = true;
+				return;
+			}
+			// macOS / Windows: file returned directly from native dialog
+			await handleFile(new File([new Uint8Array(result.data)], result.name, { type: 'application/pdf' }));
 		} catch (err) {
 			editor.loadError = String(err);
 		}

@@ -94,12 +94,26 @@
 		editor.selectStamp(editor.selectedStampId === stampId ? null : stampId);
 	}
 
-	/** Opens Thunar so the user can drag a PNG stamp into this panel. */
+	/**
+	 * Cross-platform file picker.
+	 * - Linux: pick_file opens Thunar and returns null → show drag hint.
+	 * - macOS / Windows: pick_file returns file bytes from the native dialog.
+	 */
 	async function onAddStamp() {
 		uploadError = null;
 		try {
-			await invoke('open_file_manager');
-			showHint = true;
+			type Picked = { name: string; data: number[] } | null;
+			const result = await invoke<Picked>('pick_file', { filterType: 'png' });
+			if (!result) {
+				// Linux: Thunar was opened — show the drag-and-drop hint
+				showHint = true;
+				return;
+			}
+			// macOS / Windows: file returned directly from native dialog
+			const blob = new File([new Uint8Array(result.data)], result.name, { type: 'image/png' });
+			const name = result.name.replace(/\.png$/i, '') || 'stamp';
+			await addStamp(name, blob);
+			await editor.refreshStamps();
 		} catch (err) {
 			uploadError = err instanceof Error ? err.message : String(err);
 		}
