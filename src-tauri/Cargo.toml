@@ -1,6 +1,6 @@
 [package]
 name = "timbrapp"
-version = "0.1.7"
+version = "0.1.8"
 description = "Apply PNG stamps and signatures to PDF documents."
 authors = ["timbrapp contributors"]
 license = "MIT"
@@ -21,3 +21,11 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
+
+# rfd provides native OS file dialogs: NSOpenPanel on macOS and
+# IFileOpenDialog on Windows.  It is NOT used on Linux because the GTK3
+# context inside WebKitGTK conflicts with rfd's own GTK context, causing
+# every dialog to render as a blank white window.  Linux uses Thunar
+# drag-and-drop instead (see pick_file in lib.rs).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rfd = { version = "0.14", default-features = false }

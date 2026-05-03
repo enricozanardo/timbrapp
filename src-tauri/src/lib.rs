@@ -1,19 +1,62 @@
 use serde::Serialize;
 
-/// Read a file by absolute path and return its name + raw bytes.
-///
-/// Used by the drag-and-drop handler: WebKitGTK on Linux passes file drops as
-/// `text/uri-list` (e.g. `file:///home/user/doc.pdf`) rather than populating
-/// `DataTransfer.files`.  The frontend extracts the path from the URI and
-/// calls this command to get the file bytes without any file-chooser dialog.
+/// File data returned to the JS layer after the user picks or drops a file.
 #[derive(Serialize)]
-struct FileData {
+struct PickedFile {
   name: String,
   data: Vec<u8>,
 }
 
+/// Cross-platform file picker.
+///
+/// **Linux** — GTK3 file-chooser dialogs conflict with WebKitGTK's own GTK
+/// context and render as a blank white window on many systems (confirmed on
+/// Gentoo + Intel Arc / Xe GPU).  Instead we spawn Thunar detached and return
+/// `None` immediately; the frontend shows a "drag here" hint and the file
+/// arrives via Tauri's `onDragDropEvent`.
+///
+/// **macOS / Windows** — `rfd` opens the native OS dialog (NSOpenPanel /
+/// IFileOpenDialog) which has no GTK dependency and works on every system.
+/// The picked file's bytes are returned directly so no drag-and-drop step is
+/// needed.
 #[tauri::command]
-fn read_file(path: String) -> Result<FileData, String> {
+async fn pick_file(filter_type: String) -> Result<Option<PickedFile>, String> {
+  // ---- Linux: open Thunar, signal the frontend to show the drag hint ----
+  #[cfg(target_os = "linux")]
+  {
+    let _ = &filter_type; // filter applied by the file manager itself
+    std::process::Command::new("thunar")
+      .spawn()
+      .map_err(|e| format!("Failed to open Thunar: {e}"))?;
+    return Ok(None);
+  }
+
+  // ---- macOS / Windows: native dialog via rfd --------------------------
+  #[cfg(not(target_os = "linux"))]
+  {
+    use rfd::AsyncFileDialog;
+    let mut dialog = AsyncFileDialog::new();
+    match filter_type.as_str() {
+      "pdf" => { dialog = dialog.add_filter("PDF", &["pdf"]); }
+      "png" => { dialog = dialog.add_filter("PNG Image", &["png"]); }
+      _     => {}
+    }
+    let handle = dialog.pick_file().await;
+    return match handle {
+      None    => Ok(None),
+      Some(h) => {
+        let name = h.file_name();
+        let data = h.read().await;
+        Ok(Some(PickedFile { name, data }))
+      }
+    };
+  }
+}
+
+/// Read a file by absolute path and return its name + raw bytes.
+/// Used by `onDragDropEvent` on all platforms to load a dropped file.
+#[tauri::command]
+fn read_file(path: String) -> Result<PickedFile, String> {
   let data = std::fs::read(&path)
     .map_err(|e| format!("Cannot read '{path}': {e}"))?;
   let name = std::path::Path::new(&path)
@@ -21,29 +64,13 @@ fn read_file(path: String) -> Result<FileData, String> {
     .and_then(|n| n.to_str())
     .unwrap_or("file")
     .to_string();
-  Ok(FileData { name, data })
-}
-
-/// Open Thunar (the file manager) so the user can navigate to a file and
-/// drag it into the app's drop zone.  This is the Linux workaround for the
-/// WRY/WebKitGTK bug where any file-chooser dialog (WebView child window or
-/// in-process GTK dialog) renders as a blank white window on systems with
-/// Intel Arc / Xe GPUs.
-///
-/// Thunar is spawned detached — we return immediately without waiting for it
-/// to exit so the Tauri window stays fully responsive.
-#[tauri::command]
-fn open_file_manager() -> Result<(), String> {
-  std::process::Command::new("thunar")
-    .spawn()
-    .map_err(|e| format!("Failed to open Thunar: {e}"))?;
-  Ok(())
+  Ok(PickedFile { name, data })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![open_file_manager, read_file])
+    .invoke_handler(tauri::generate_handler![pick_file, read_file])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
