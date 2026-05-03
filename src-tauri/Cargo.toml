@@ -1,6 +1,6 @@
 [package]
 name = "timbrapp"
-version = "0.1.8"
+version = "0.1.9"
 description = "Apply PNG stamps and signatures to PDF documents."
 authors = ["timbrapp contributors"]
 license = "MIT"
@@ -29,3 +29,10 @@ tauri-plugin-log = "2"
 # drag-and-drop instead (see pick_file in lib.rs).
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 rfd = { version = "0.14", default-features = false }
+# Auto-updater and process-restart are safe on macOS/Windows because the
+# updater installs a new .dmg / .exe directly without touching the desktop
+# entry.  On Linux the updater re-extracts the AppImage and overwrites the
+# desktop entry, reverting to the bundled (pre-fix) binary — so it is
+# intentionally excluded from Linux builds.
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"

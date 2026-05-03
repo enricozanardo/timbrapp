@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "updater",
+  "description": "Auto-updater permissions — macOS and Windows only.\nOn Linux the updater re-extracts the AppImage and overwrites the desktop\nentry, so the plugin is intentionally excluded from Linux builds.",
+  "windows": [
+    "main"
+  ],
+  "platforms": ["macOS", "windows"],
+  "permissions": [
+    "updater:default",
+    "process:default",
+    "process:allow-restart"
+  ]
+}

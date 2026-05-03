@@ -1,13 +1,18 @@
 <script lang="ts">
 	import Modal from './Modal.svelte';
 	import { APP_VERSION } from '$lib/version';
+	import { updater, isTauri, isLinux } from '$lib/stores/updater.svelte';
 
-	type Props = {
-		open: boolean;
-		onClose: () => void;
-	};
-
+	type Props = { open: boolean; onClose: () => void; };
 	let { open, onClose }: Props = $props();
+
+	const canUpdate = isTauri() && !isLinux();
+	const statusKind = $derived(updater.state.kind);
+
+	async function manualCheck() {
+		await updater.check(false);
+		if (updater.state.kind === 'available') onClose();
+	}
 </script>
 
 <Modal {open} title="About timbrapp" {onClose}>
@@ -41,14 +46,20 @@
 		</dl>
 
 		<section class="updater">
-			<a
-				href="https://github.com/enricozanardo/timbrapp/releases/latest"
-				target="_blank"
-				rel="noopener"
-				class="btn"
-			>
-				Check releases page
-			</a>
+			{#if canUpdate}
+				<div class="row">
+					<button type="button" class="btn" onclick={manualCheck}
+						disabled={statusKind === 'checking' || statusKind === 'installing'}>
+						{statusKind === 'checking' ? 'Checking…' : statusKind === 'installing' ? 'Installing…' : 'Check for updates'}
+					</button>
+					{#if statusKind === 'up-to-date'}<span class="status ok">You're on the latest version.</span>{/if}
+					{#if statusKind === 'error'}<span class="status err">Check failed — try again later.</span>{/if}
+					{#if statusKind === 'available' && updater.state.kind === 'available'}<span class="status info">v{updater.state.version} ready.</span>{/if}
+				</div>
+			{:else}
+				<a href="https://github.com/enricozanardo/timbrapp/releases/latest"
+				   target="_blank" rel="noopener" class="btn">Check releases page</a>
+			{/if}
 		</section>
 
 		<p class="credits">

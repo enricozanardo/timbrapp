@@ -69,8 +69,19 @@ fn read_file(path: String) -> Result<PickedFile, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![pick_file, read_file])
+  let builder = tauri::Builder::default()
+    .invoke_handler(tauri::generate_handler![pick_file, read_file]);
+
+  // Auto-updater: macOS + Windows only.
+  // On Linux the updater re-extracts the AppImage and overwrites the desktop
+  // entry, reverting to the bundled binary.  Linux users update by rebuilding
+  // from source (see README).
+  #[cfg(not(target_os = "linux"))]
+  let builder = builder
+    .plugin(tauri_plugin_updater::Builder::new().build())
+    .plugin(tauri_plugin_process::init());
+
+  builder
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
