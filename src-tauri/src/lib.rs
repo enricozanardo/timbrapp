@@ -43,10 +43,6 @@ fn open_file_manager() -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    // Updater + process: lets the app check GitHub Releases for newer
-    // versions, download and verify the signed update, then relaunch.
-    .plugin(tauri_plugin_updater::Builder::new().build())
-    .plugin(tauri_plugin_process::init())
     .invoke_handler(tauri::generate_handler![open_file_manager, read_file])
     .setup(|app| {
       if cfg!(debug_assertions) {
