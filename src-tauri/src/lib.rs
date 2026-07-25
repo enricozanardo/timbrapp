@@ -41,13 +41,25 @@ pub fn run() {
       read_file_bytes,
     ])
     .setup(|app| {
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
+      // Log in release too (to a file), so crashes/errors while talking to the
+      // CIE PKCS#11 module can be diagnosed from a user's machine.
+      app.handle().plugin(
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Info)
+          .targets([
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+              file_name: Some("timbrapp".into()),
+            }),
+          ])
+          .build(),
+      )?;
+      // Turn a Rust panic into a logged line instead of a silent abort.
+      let default_hook = std::panic::take_hook();
+      std::panic::set_hook(Box::new(move |info| {
+        log::error!("panic: {info}");
+        default_hook(info);
+      }));
       Ok(())
     })
     .run(tauri::generate_context!())

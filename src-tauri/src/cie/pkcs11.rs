@@ -74,13 +74,44 @@ pub fn resolve_module_path(explicit: Option<&str>, bundled: &[String]) -> CieRes
     ))
 }
 
+/// Run a closure that calls into the (native, third-party) PKCS#11 module,
+/// converting a Rust panic into a clean error instead of aborting the whole
+/// app. This does not protect against a hard native crash inside the module,
+/// but it does contain panics originating in the binding layer.
+fn guard_ffi<T>(what: &str, f: impl FnOnce() -> CieResult<T>) -> CieResult<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(res) => res,
+        Err(_) => {
+            log::error!("panic while {what}");
+            Err(CieError::Other(format!(
+                "the PKCS#11 module crashed while {what}. It may be incompatible \
+                 or require its middleware/service to be running."
+            )))
+        }
+    }
+}
+
 /// Load + initialize the PKCS#11 module.
 fn open_module(module_path: &str) -> CieResult<Pkcs11> {
     if !Path::new(module_path).exists() {
         return Err(CieError::ModuleNotFound(module_path.to_string()));
     }
-    let pkcs11 = Pkcs11::new(module_path)?;
-    pkcs11.initialize(CInitializeArgs::OsThreads)?;
+    log::info!("loading PKCS#11 module: {module_path}");
+    let pkcs11 = guard_ffi("loading the PKCS#11 module", || Ok(Pkcs11::new(module_path)?))?;
+    log::info!("initializing PKCS#11 module");
+    guard_ffi("initializing the PKCS#11 module", || {
+        // Some modules report "already initialized" if a previous instance did
+        // not finalize cleanly; treat that as success rather than failing.
+        match pkcs11.initialize(CInitializeArgs::OsThreads) {
+            Ok(()) => Ok(()),
+            Err(e) if e.to_string().contains("already been initialized") => {
+                log::warn!("module was already initialized; reusing");
+                Ok(())
+            }
+            Err(e) => Err(CieError::from(e)),
+        }
+    })?;
+    log::info!("PKCS#11 module ready");
     Ok(pkcs11)
 }
 
