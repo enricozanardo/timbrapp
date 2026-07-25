@@ -123,6 +123,16 @@ fn find_slot(pkcs11: &Pkcs11, slot_id: u64) -> CieResult<Slot> {
         .ok_or(CieError::SlotNotFound(slot_id))
 }
 
+/// Count of PC/SC readers the module can see at all, regardless of whether a
+/// card is present. Lets the UI tell "no reader detected" from "reader present
+/// but no card on it". Returns 0 on any error (best-effort diagnostic).
+pub fn count_all_slots(module_path: &str) -> usize {
+    match open_module(module_path) {
+        Ok(pkcs11) => pkcs11.get_all_slots().map(|s| s.len()).unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
 /// List readers/slots that currently have a token (card) present.
 pub fn list_readers(module_path: &str) -> CieResult<Vec<ReaderInfo>> {
     let pkcs11 = open_module(module_path)?;

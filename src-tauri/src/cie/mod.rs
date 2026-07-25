@@ -112,12 +112,29 @@ pub fn cie_status(app: tauri::AppHandle, module_path: Option<String>) -> CieStat
                     message: format!("{} reader(s) with a card detected.", readers.len()),
                     readers,
                 },
-                Ok(_) => CieStatus {
-                    module_path: Some(path),
-                    module_found: true,
-                    readers: vec![],
-                    message: "PKCS#11 module loaded, but no reader has a CIE inserted. Place the card on the NFC reader.".into(),
-                },
+                Ok(_) => {
+                    // Distinguish "no reader at all in PC/SC" from "reader
+                    // present but no card on the pad".
+                    let slots = pkcs11::count_all_slots(&path);
+                    let message = if slots == 0 {
+                        "PKCS#11 module loaded, but it sees no readers via PC/SC. \
+                         Check that the reader's driver is installed and the smart-card \
+                         service is running (on macOS, install the reader's CCID driver / \
+                         CIE middleware and reconnect the reader)."
+                            .into()
+                    } else {
+                        format!(
+                            "{slots} reader(s) detected, but no CIE is on them. Rest the card \
+                             flat on the contactless (NFC) pad and keep it there while scanning."
+                        )
+                    };
+                    CieStatus {
+                        module_path: Some(path),
+                        module_found: true,
+                        readers: vec![],
+                        message,
+                    }
+                }
                 Err(e) => CieStatus {
                     module_path: Some(path),
                     module_found: true,
