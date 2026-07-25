@@ -27,6 +27,53 @@ export type Placement = {
 	rotation?: number;
 };
 
+/** A PC-SC slot/reader with a card inserted (from the Rust backend). */
+export type ReaderInfo = {
+	slotId: number;
+	slotDescription: string;
+	manufacturer: string;
+	tokenPresent: boolean;
+	tokenLabel: string | null;
+};
+
+/** A certificate available on the CIE (from the Rust backend). */
+export type CertificateInfo = {
+	/** PKCS#11 CKA_ID (hex) used to select the key/cert for signing. */
+	idHex: string;
+	label: string;
+	subject: string;
+	issuer: string;
+	serialHex: string;
+	notBefore: string;
+	notAfter: string;
+	slotId: number;
+	/** True for the likely FEA/subscription (signing) certificate. */
+	keyUsageSign: boolean;
+};
+
+/** Diagnostics summary for the CIE setup panel. */
+export type CieStatus = {
+	modulePath: string | null;
+	moduleFound: boolean;
+	readers: ReaderInfo[];
+	message: string;
+};
+
+/** Result of a one-time CIE enrollment ("Abilita CIE"). */
+export type EnrollOutcome = {
+	/** Raw vendor return code (0 = OK, 240 = already enrolled, 160 = wrong PIN, …). */
+	code: number;
+	ok: boolean;
+	/** True when a wrong PIN consumed one of the 3 attempts. */
+	consumedAttempt: boolean;
+	message: string;
+	pan: string | null;
+	cardholder: string | null;
+	serial: string | null;
+	/** Remaining PIN attempts as reported by the module, when available. */
+	attemptsLeft: number | null;
+};
+
 /** Cached page metadata exposed by the editor store. */
 export type PageMeta = {
 	pageIndex: number;

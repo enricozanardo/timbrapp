@@ -1,27 +1,34 @@
 <script lang="ts">
 	import { editor } from '$lib/stores/editor.svelte';
-	import { buildStampedPdf, downloadPdf, stampedFilename } from '$lib/pdf/save';
+	import { buildStampedPdf, savePdf, stampedFilename } from '$lib/pdf/save';
+	import { isCieAvailable } from '$lib/cie/api';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import AboutDialog from './AboutDialog.svelte';
+	import SignDialog from './SignDialog.svelte';
 
 	let saving = $state(false);
 	let saveError = $state<string | null>(null);
+	let saveNotice = $state<string | null>(null);
 
 	type PendingPrompt = 'clear' | 'close' | null;
 	let pending = $state<PendingPrompt>(null);
 	let aboutOpen = $state(false);
+	let signOpen = $state(false);
+	const cieAvailable = isCieAvailable();
 
 	async function onSave() {
 		if (!editor.pdfBytes) return;
 		saving = true;
 		saveError = null;
+		saveNotice = null;
 		try {
 			const bytes = await buildStampedPdf({
 				originalBytes: editor.pdfBytes,
 				placements: editor.placements,
 				stamps: editor.stamps
 			});
-			downloadPdf(bytes, stampedFilename(editor.pdfFileName));
+			const path = await savePdf(bytes, stampedFilename(editor.pdfFileName), editor.pdfSourceDir);
+			saveNotice = path ? `Saved to ${path}` : 'Stamped PDF downloaded.';
 		} catch (err) {
 			saveError = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -99,12 +106,17 @@
 			<button type="button" class="btn" onclick={askClose}>Close PDF</button>
 			<button
 				type="button"
-				class="btn primary"
+				class="btn"
 				onclick={onSave}
 				disabled={saving || editor.placements.length === 0}
 			>
-				{saving ? 'Saving…' : 'Download stamped PDF'}
+				{saving ? 'Saving…' : 'Save stamped PDF'}
 			</button>
+			{#if cieAvailable}
+				<button type="button" class="btn primary" onclick={() => (signOpen = true)}>
+					Sign with CIE
+				</button>
+			{/if}
 		{/if}
 
 		<button
@@ -120,6 +132,9 @@
 
 	{#if saveError}
 		<div class="error" role="alert">{saveError}</div>
+	{/if}
+	{#if saveNotice}
+		<div class="notice" role="status">{saveNotice}</div>
 	{/if}
 </header>
 
@@ -144,6 +159,8 @@
 />
 
 <AboutDialog open={aboutOpen} onClose={() => (aboutOpen = false)} />
+
+<SignDialog open={signOpen} onClose={() => (signOpen = false)} />
 
 <style>
 	.toolbar {
@@ -256,5 +273,13 @@
 		flex-basis: 100%;
 		color: #b91c1c;
 		font-size: 0.85rem;
+	}
+	.notice {
+		flex-basis: 100%;
+		color: #15803d;
+		font-size: 0.85rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 </style>

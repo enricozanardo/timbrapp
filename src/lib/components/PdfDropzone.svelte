@@ -1,8 +1,11 @@
 <script lang="ts">
 	import { editor } from '$lib/stores/editor.svelte';
+	import { openPdfViaDialog } from '$lib/pdf/save';
 
 	let dragOver = $state(false);
 	let inputEl: HTMLInputElement;
+
+	const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 	async function handleFile(file: File | null | undefined) {
 		if (!file) return;
@@ -11,6 +14,25 @@
 			return;
 		}
 		await editor.loadPdfFromFile(file);
+	}
+
+	/** Desktop: open through the native dialog so we learn the source folder
+	 * (and can default saves there). Falls back to the hidden file input. */
+	async function chooseFile() {
+		if (isTauri) {
+			try {
+				const opened = await openPdfViaDialog();
+				if (opened) {
+					await editor.loadPdfFromBytes(opened.bytes, opened.name, opened.dir);
+					return;
+				}
+				return; // user cancelled the native dialog
+			} catch (err) {
+				editor.loadError = err instanceof Error ? err.message : String(err);
+				return;
+			}
+		}
+		inputEl.click();
 	}
 
 	function onDrop(e: DragEvent) {
@@ -62,9 +84,7 @@
 		</svg>
 		<p class="title">Drop a PDF here</p>
 		<p class="subtitle">or</p>
-		<button type="button" class="btn primary" onclick={() => inputEl.click()}>
-			Choose PDF file
-		</button>
+		<button type="button" class="btn primary" onclick={chooseFile}> Choose PDF file </button>
 		<input
 			bind:this={inputEl}
 			type="file"

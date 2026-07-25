@@ -14,6 +14,9 @@ import { clampPlacement } from '../pdf/coords';
  */
 class EditorState {
 	pdfFileName = $state<string | null>(null);
+	/** Absolute directory the PDF was opened from (native dialog only); null for
+	 * drag-drop / browser file input. Used to default the save location. */
+	pdfSourceDir = $state<string | null>(null);
 	/** Pristine bytes of the loaded PDF, kept around so pdf-lib can read them at save time. */
 	pdfBytes = $state<Uint8Array | null>(null);
 	loaded = $state<LoadedPdf | null>(null);
@@ -52,18 +55,26 @@ class EditorState {
 	}
 
 	async loadPdfFromFile(file: File): Promise<void> {
+		const buf = await file.arrayBuffer();
+		await this.loadPdfFromBytes(new Uint8Array(buf), file.name, null);
+	}
+
+	async loadPdfFromBytes(
+		pristine: Uint8Array,
+		name: string,
+		sourceDir: string | null
+	): Promise<void> {
 		this.loading = true;
 		this.loadError = null;
 		try {
-			const buf = await file.arrayBuffer();
-			const pristine = new Uint8Array(buf);
 			const loaded = await LoadedPdf.load(pristine);
 
 			if (this.loaded) {
 				await this.loaded.destroy().catch(() => undefined);
 			}
 
-			this.pdfFileName = file.name;
+			this.pdfFileName = name;
+			this.pdfSourceDir = sourceDir;
 			this.pdfBytes = pristine;
 			this.loaded = loaded;
 			this.pages = loaded.pages;
@@ -81,6 +92,7 @@ class EditorState {
 			void this.loaded.destroy().catch(() => undefined);
 		}
 		this.pdfFileName = null;
+		this.pdfSourceDir = null;
 		this.pdfBytes = null;
 		this.loaded = null;
 		this.pages = [];

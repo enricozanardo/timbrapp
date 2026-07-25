@@ -1,3 +1,8 @@
+# Personal / test artifacts — signed PDFs and exported certificates may contain
+# real identity data from a CIE, so they must never be committed.
+*-signed.pdf
+certificato-*.pdf
+
 # Node / SvelteKit
 node_modules/
 .svelte-kit/
@@ -5,6 +10,8 @@ node_modules/
 build/
 *.tsbuildinfo
 package-lock.json.bak
+
+extra/
 
 # Environments / secrets
 .env
@@ -26,6 +33,10 @@ AuthKey_*.p8
 # Tauri (Rust shell)
 src-tauri/target/
 src-tauri/gen/schemas/
+
+# CIE middleware binaries (provided locally, too large / licensed to commit)
+external_lib/
+src-tauri/resources/pkcs11/
 
 # Editor / OS
 .DS_Store

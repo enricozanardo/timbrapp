@@ -1,6 +1,6 @@
 [package]
 name = "timbrapp"
-version = "0.1.5"
+version = "0.2.0"
 description = "Apply PNG stamps and signatures to PDF documents."
 authors = ["timbrapp contributors"]
 license = "MIT"
@@ -23,3 +23,18 @@ tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+cryptoki = "0.8"
+cms = { version = "0.2", features = ["std"] }
+x509-cert = { version = "0.2", features = ["std"] }
+der = { version = "0.7", features = ["std", "oid", "derive", "alloc"] }
+spki = { version = "0.7", features = ["alloc"] }
+const-oid = { version = "0.9", features = ["db"] }
+sha2 = "0.10"
+lopdf = "0.34"
+hex = "0.4"
+libloading = "0.8"
+thiserror = "2"
+anyhow = "1"
+base64 = "0.22"
+chrono = "0.4"
+tauri-plugin-dialog = "2"
