@@ -25,6 +25,9 @@ pub fn default_module_candidates() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
         vec![
+            // Official IPZS "Middleware CIE" installs its PKCS#11 module here.
+            r"C:\Windows\System32\CIEPKI.dll".into(),
+            r"C:\Windows\SysWOW64\CIEPKI.dll".into(),
             r"C:\Windows\System32\cie-pkcs11.dll".into(),
             r"C:\Windows\System32\bit4p11.dll".into(),
             r"C:\Program Files\Software CIE\cie-pkcs11.dll".into(),

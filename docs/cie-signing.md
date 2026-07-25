@@ -42,6 +42,15 @@ The backend resolves the module path in this order:
 2. A module **bundled inside TimbrApp** under `resources/pkcs11/` (see below).
 3. A **system-installed** module (official "Software CIE" default locations).
 
+Per-OS system defaults that are auto-detected:
+
+- **Windows**: the official "Middleware CIE" installs its PKCS#11 module as
+  `C:\Windows\System32\CIEPKI.dll` (also probed in `SysWOW64`). If it isn't
+  found, install the middleware (`MiddlewareCIE_*.msi` from
+  <https://www.cartaidentita.interno.gov.it>) or type the full DLL path.
+- **Linux**: `libcie-pkcs11.so` under `/usr/lib`, `/usr/local/lib`, `/opt/CIE`, …
+- **macOS**: `libcie-pkcs11.dylib` under `/Library/CIE`, `/usr/local/lib`, …
+
 ## Enrollment (one-time "Abilita CIE" pairing)
 
 The CIE contactless interface must be **paired** with the middleware once per

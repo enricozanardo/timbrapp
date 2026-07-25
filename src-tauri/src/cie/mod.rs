@@ -72,7 +72,7 @@ fn bundled_module_candidates(app: &tauri::AppHandle) -> Vec<String> {
     };
     let base = dir.join("pkcs11");
     let names: &[&str] = if cfg!(target_os = "windows") {
-        &["cie-pkcs11.dll", "libcie-pkcs11.dll", "bit4p11.dll"]
+        &["CIEPKI.dll", "cie-pkcs11.dll", "libcie-pkcs11.dll", "bit4p11.dll"]
     } else if cfg!(target_os = "macos") {
         &["libcie-pkcs11.dylib"]
     } else {
