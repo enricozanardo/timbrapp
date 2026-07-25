@@ -74,6 +74,16 @@ export type EnrollOutcome = {
 	attemptsLeft: number | null;
 };
 
+/**
+ * A visible signature "stamp" appearance passed to the backend when signing.
+ * `rect` is `[x0, y0, x1, y1]` in PDF points (bottom-left origin).
+ */
+export type SignatureAppearance = {
+	pageIndex: number;
+	rect: [number, number, number, number];
+	lines: string[];
+};
+
 /** Cached page metadata exposed by the editor store. */
 export type PageMeta = {
 	pageIndex: number;

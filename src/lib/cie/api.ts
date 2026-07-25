@@ -6,7 +6,13 @@
  * Every call is gated behind {@link isCieAvailable}; in the plain web build (no
  * Tauri) the functions throw a clear error instead of failing obscurely.
  */
-import type { CertificateInfo, CieStatus, EnrollOutcome, ReaderInfo } from '$lib/types';
+import type {
+	CertificateInfo,
+	CieStatus,
+	EnrollOutcome,
+	ReaderInfo,
+	SignatureAppearance
+} from '$lib/types';
 
 function isTauri(): boolean {
 	return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -109,6 +115,8 @@ export async function signPdf(params: {
 	pdf: Uint8Array;
 	reason?: string;
 	location?: string;
+	/** Optional visible signature "stamp" appearance. */
+	appearance?: SignatureAppearance;
 	modulePath?: string;
 }): Promise<Uint8Array> {
 	const signed = await invoke<string>('cie_sign_pdf', {
@@ -118,7 +126,8 @@ export async function signPdf(params: {
 		pin: params.pin,
 		pdfBase64: toBase64(params.pdf),
 		reason: params.reason,
-		location: params.location
+		location: params.location,
+		appearance: params.appearance
 	});
 	return fromBase64(signed);
 }

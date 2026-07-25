@@ -72,6 +72,15 @@
 
 	function stopPlacing() {
 		editor.selectStamp(null);
+		editor.placingSignature = false;
+	}
+
+	function toggleSignatureBox() {
+		if (editor.signaturePlacement) {
+			editor.removeSignature();
+		} else {
+			editor.startPlacingSignature();
+		}
 	}
 </script>
 
@@ -82,10 +91,10 @@
 			<span class="file" title={editor.pdfFileName}>· {editor.pdfFileName}</span>
 			<span class="badge">{editor.pages.length} pages · {editor.placements.length} stamps</span>
 		{/if}
-		{#if editor.selectedStampId && editor.hasPdf}
+		{#if (editor.selectedStampId || editor.placingSignature) && editor.hasPdf}
 			<button type="button" class="placing-pill" onclick={stopPlacing} title="Press Esc to cancel">
 				<span class="dot"></span>
-				Placing — click to stop
+				{editor.placingSignature ? 'Click on the page to place the signature' : 'Placing — click to stop'}
 			</button>
 		{/if}
 	</div>
@@ -113,6 +122,15 @@
 				{saving ? 'Saving…' : 'Save stamped PDF'}
 			</button>
 			{#if cieAvailable}
+				<button
+					type="button"
+					class="btn"
+					class:active={editor.placingSignature}
+					onclick={toggleSignatureBox}
+					title="Place a visible 'Firmato digitalmente da…' box, then sign with CIE"
+				>
+					{editor.signaturePlacement ? 'Remove signature box' : 'Signature box'}
+				</button>
 				<button type="button" class="btn primary" onclick={() => (signOpen = true)}>
 					Sign with CIE
 				</button>
@@ -247,6 +265,11 @@
 	.btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+	.btn.active {
+		background: #dbeafe;
+		border-color: #93c5fd;
+		color: #1d4ed8;
 	}
 	.btn.primary {
 		background: var(--accent, #2563eb);

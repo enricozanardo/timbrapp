@@ -189,6 +189,7 @@ pub fn cie_sign_pdf(
     pdf_base64: String,
     reason: Option<String>,
     location: Option<String>,
+    appearance: Option<pades::SignatureAppearance>,
 ) -> CieResult<String> {
     let bundled = bundled_module_candidates(&app);
     let path = pkcs11::resolve_module_path(module_path.as_deref(), &bundled)?;
@@ -201,6 +202,7 @@ pub fn cie_sign_pdf(
         &pin,
         reason.as_deref(),
         location.as_deref(),
+        appearance,
     )?;
     Ok(b64_encode(&signed))
 }

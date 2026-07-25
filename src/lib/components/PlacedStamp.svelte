@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { editor } from '$lib/stores/editor.svelte';
+	import { editor, SIGNATURE_STAMP_ID } from '$lib/stores/editor.svelte';
 	import { getStampUrl } from '$lib/stamps/objectUrl';
 	import { placementToScreenRect, screenRectToPlacement } from '$lib/pdf/coords';
 	import type { Placement } from '$lib/types';
@@ -13,7 +13,8 @@
 
 	let { placement, pageWidth, pageHeight, scale }: Props = $props();
 
-	const stamp = $derived(editor.getStamp(placement.stampId));
+	const isSignature = $derived(placement.stampId === SIGNATURE_STAMP_ID);
+	const stamp = $derived(isSignature ? undefined : editor.getStamp(placement.stampId));
 	const stampUrl = $derived(stamp ? getStampUrl(stamp) : '');
 	const rect = $derived(placementToScreenRect(placement, pageHeight, scale));
 	const selected = $derived(editor.selectedPlacementId === placement.id);
@@ -119,26 +120,29 @@
 <div
 	class="placement"
 	class:selected
+	class:signature={isSignature}
 	style:left="{rect.left}px"
 	style:top="{rect.top}px"
 	style:width="{rect.width}px"
 	style:height="{rect.height}px"
 	role="button"
 	tabindex="0"
-	aria-label="Placed stamp {stamp?.name ?? ''}"
+	aria-label={isSignature ? 'CIE signature box' : `Placed stamp ${stamp?.name ?? ''}`}
 	onpointerdown={(e) => onPointerDown(e, 'move')}
 	onpointermove={onPointerMove}
 	onpointerup={endDrag}
 	onpointercancel={endDrag}
 >
-	{#if stampUrl}
+	{#if isSignature}
+		<span class="sig-label">✒︎ Firma CIE</span>
+	{:else if stampUrl}
 		<img src={stampUrl} alt="" draggable="false" />
 	{/if}
 	<button
 		type="button"
 		class="remove"
-		aria-label="Remove this stamp"
-		title="Remove this stamp"
+		aria-label={isSignature ? 'Remove the signature box' : 'Remove this stamp'}
+		title={isSignature ? 'Remove the signature box' : 'Remove this stamp'}
 		onpointerdown={(e) => e.stopPropagation()}
 		onclick={onRemove}
 	>
@@ -179,6 +183,29 @@
 		display: block;
 		pointer-events: none;
 		-webkit-user-drag: none;
+	}
+	.placement.signature {
+		outline: 1.5px dashed rgba(37, 99, 235, 0.7);
+		background: rgba(37, 99, 235, 0.06);
+		border-radius: 2px;
+	}
+	.placement.signature.selected {
+		outline-style: solid;
+	}
+	.sig-label {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.25rem;
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: #1d4ed8;
+		pointer-events: none;
+		user-select: none;
+		white-space: nowrap;
+		overflow: hidden;
 	}
 	.handle {
 		position: absolute;

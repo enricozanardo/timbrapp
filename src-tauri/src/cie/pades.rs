@@ -5,11 +5,26 @@
 //! those bytes in place so the byte offsets stay exact. The CMS/PKCS#7 blob is
 //! produced by [`crate::cie::cms`] with the raw signature done on the CIE chip.
 
-use lopdf::{Dictionary, Document, Object, StringFormat};
+use lopdf::{Dictionary, Document, Object, Stream, StringFormat};
+use serde::Deserialize;
 
 use crate::cie::cms;
 use crate::cie::error::{CieError, CieResult};
 use crate::cie::pkcs11::CardSigner;
+
+/// A visible signature appearance: where to draw the "stamp" and what text to
+/// show. Coordinates are in PDF points with origin at the bottom-left of the
+/// page (the same space the frontend stores placements in).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureAppearance {
+    /// 0-based page index the box sits on.
+    pub page_index: usize,
+    /// `[x0, y0, x1, y1]` rectangle in PDF points (bottom-left origin).
+    pub rect: [f32; 4],
+    /// Text lines drawn top-to-bottom inside the box.
+    pub lines: Vec<String>,
+}
 
 /// Reserved size (in bytes) for the CMS blob inside `/Contents`. Encoded as
 /// twice as many hex characters. A CIE PAdES-B-B signature (one RSA-2048 signer
@@ -29,10 +44,11 @@ pub fn sign_pdf(
     pin: &str,
     reason: Option<&str>,
     location: Option<&str>,
+    appearance: Option<SignatureAppearance>,
 ) -> CieResult<Vec<u8>> {
     let signer = CardSigner::open(module_path, slot_id, cert_id_hex, pin)?;
 
-    let mut buf = build_placeholder_pdf(pdf, reason, location)?;
+    let mut buf = build_placeholder_pdf(pdf, reason, location, appearance.as_ref())?;
     let (contents_lt, contents_gt) = find_contents_span(&buf)?;
 
     // ByteRange covers everything except the hex between < and >.
@@ -57,6 +73,7 @@ fn build_placeholder_pdf(
     pdf: &[u8],
     reason: Option<&str>,
     location: Option<&str>,
+    appearance: Option<&SignatureAppearance>,
 ) -> CieResult<Vec<u8>> {
     let mut doc = Document::load_mem(pdf)?;
 
@@ -67,11 +84,25 @@ fn build_placeholder_pdf(
         .as_reference()
         .map_err(CieError::from)?;
 
-    let page_id = *doc
-        .get_pages()
-        .values()
-        .next()
+    // Pages in display order (BTreeMap keyed by 1-based page number).
+    let page_ids: Vec<lopdf::ObjectId> = doc.get_pages().into_values().collect();
+    // Attach the widget to the page carrying the visible box (default: first).
+    let target_page = appearance.map(|a| a.page_index).unwrap_or(0);
+    let page_id = *page_ids
+        .get(target_page)
+        .or_else(|| page_ids.first())
         .ok_or_else(|| CieError::Pdf("PDF has no pages".into()))?;
+
+    // Build the visible appearance form XObject up-front (needs its own object
+    // ids), so we can reference it from the widget's /AP below.
+    let appearance_ref = match appearance {
+        Some(ap) => Some(build_appearance_xobject(&mut doc, ap)?),
+        None => None,
+    };
+    // Widget rectangle: the visible box, or a zero-size (invisible) rect.
+    let rect = appearance
+        .map(|a| a.rect)
+        .unwrap_or([0.0, 0.0, 0.0, 0.0]);
 
     // --- Signature dictionary ---
     let mut sig = Dictionary::new();
@@ -111,10 +142,10 @@ fn build_placeholder_pdf(
     field.set(
         "Rect",
         Object::Array(vec![
-            Object::Integer(0),
-            Object::Integer(0),
-            Object::Integer(0),
-            Object::Integer(0),
+            Object::Real(rect[0]),
+            Object::Real(rect[1]),
+            Object::Real(rect[2]),
+            Object::Real(rect[3]),
         ]),
     );
     field.set(
@@ -124,6 +155,11 @@ fn build_placeholder_pdf(
     field.set("V", Object::Reference(sig_id));
     field.set("P", Object::Reference(page_id));
     field.set("F", Object::Integer(132)); // Print (4) + Locked (128)
+    if let Some(xobj_id) = appearance_ref {
+        let mut ap = Dictionary::new();
+        ap.set("N", Object::Reference(xobj_id));
+        field.set("AP", Object::Dictionary(ap));
+    }
     let field_id = doc.add_object(field);
 
     // --- Attach widget to the page's /Annots ---
@@ -187,6 +223,90 @@ fn build_placeholder_pdf(
     doc.save_to(&mut out)
         .map_err(|e| CieError::Pdf(e.to_string()))?;
     Ok(out)
+}
+
+/// Build a Form XObject that draws the visible signature box (a thin border
+/// plus the given text lines in Helvetica) and return its object id, ready to
+/// be referenced from the widget's `/AP /N`.
+fn build_appearance_xobject(
+    doc: &mut Document,
+    ap: &SignatureAppearance,
+) -> CieResult<lopdf::ObjectId> {
+    let w = (ap.rect[2] - ap.rect[0]).abs().max(1.0);
+    let h = (ap.rect[3] - ap.rect[1]).abs().max(1.0);
+
+    // Helvetica (standard 14 font — no embedding needed).
+    let mut font = Dictionary::new();
+    font.set("Type", Object::Name(b"Font".to_vec()));
+    font.set("Subtype", Object::Name(b"Type1".to_vec()));
+    font.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+    let font_id = doc.add_object(font);
+
+    // Fit the lines vertically inside the box.
+    let n = ap.lines.len().max(1) as f32;
+    let leading = ((h - 6.0) / n).clamp(6.0, 16.0);
+    let size = (leading * 0.82).clamp(5.0, 12.0);
+
+    let mut content = String::new();
+    content.push_str("q\n");
+    // Thin slate-grey border just inside the box edge.
+    content.push_str("0.30 0.36 0.46 RG\n0.8 w\n");
+    content.push_str(&format!("0.5 0.5 {:.2} {:.2} re\nS\n", w - 1.0, h - 1.0));
+    // Text.
+    content.push_str("0.12 0.16 0.24 rg\n");
+    content.push_str("BT\n");
+    content.push_str(&format!("/F1 {size:.2} Tf\n"));
+    let first_baseline = h - 3.0 - size;
+    content.push_str(&format!("1 0 0 1 4.00 {first_baseline:.2} Tm\n"));
+    for (i, line) in ap.lines.iter().enumerate() {
+        if i > 0 {
+            content.push_str(&format!("0 {:.2} Td\n", -leading));
+        }
+        content.push_str(&format!("({}) Tj\n", escape_pdf_text(line)));
+    }
+    content.push_str("ET\nQ\n");
+
+    let mut fonts = Dictionary::new();
+    fonts.set("F1", Object::Reference(font_id));
+    let mut resources = Dictionary::new();
+    resources.set("Font", Object::Dictionary(fonts));
+
+    let mut xdict = Dictionary::new();
+    xdict.set("Type", Object::Name(b"XObject".to_vec()));
+    xdict.set("Subtype", Object::Name(b"Form".to_vec()));
+    xdict.set("FormType", Object::Integer(1));
+    xdict.set(
+        "BBox",
+        Object::Array(vec![
+            Object::Real(0.0),
+            Object::Real(0.0),
+            Object::Real(w),
+            Object::Real(h),
+        ]),
+    );
+    xdict.set("Resources", Object::Dictionary(resources));
+
+    let stream = Stream::new(xdict, content.into_bytes());
+    Ok(doc.add_object(Object::Stream(stream)))
+}
+
+/// Escape a string for use inside a PDF literal string `( ... )`.
+fn escape_pdf_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '(' => out.push_str("\\("),
+            ')' => out.push_str("\\)"),
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            // Non-ASCII: PDFDocEncoding/WinAnsi is a superset of Latin-1 for the
+            // common accented characters we expect in Italian names.
+            c if (c as u32) <= 0xFF => out.push(c),
+            _ => out.push('?'),
+        }
+    }
+    out
 }
 
 /// Locate the `<` and `>` byte offsets of the signature `/Contents` hex string.

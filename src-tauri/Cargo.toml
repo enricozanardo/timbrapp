@@ -1,6 +1,6 @@
 [package]
 name = "timbrapp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Apply PNG stamps and signatures to PDF documents."
 authors = ["timbrapp contributors"]
 license = "MIT"

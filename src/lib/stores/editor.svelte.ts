@@ -5,6 +5,13 @@ import type { PageMeta, Placement, Stamp } from '../types';
 import { clampPlacement } from '../pdf/coords';
 
 /**
+ * Sentinel `stampId` marking a placement as the visible CIE signature box
+ * rather than an image stamp. It is drawn by the Rust backend as the
+ * signature's appearance, so `buildStampedPdf` skips it (no matching stamp).
+ */
+export const SIGNATURE_STAMP_ID = '__cie_signature__';
+
+/**
  * Reactive editor state: the loaded PDF (raw bytes + render proxy), placed
  * stamps per page, the user's stamp library, and current selections.
  *
@@ -30,11 +37,19 @@ class EditorState {
 	placements = $state<Placement[]>([]);
 	selectedPlacementId = $state<string | null>(null);
 
+	/** When true, the next click on a page drops the visible signature box. */
+	placingSignature = $state(false);
+
 	loading = $state(false);
 	loadError = $state<string | null>(null);
 
 	get hasPdf(): boolean {
 		return this.loaded !== null;
+	}
+
+	/** The single visible signature-box placement, if the user added one. */
+	get signaturePlacement(): Placement | null {
+		return this.placements.find((p) => p.stampId === SIGNATURE_STAMP_ID) ?? null;
 	}
 
 	get selectedStamp(): Stamp | null {
@@ -98,10 +113,31 @@ class EditorState {
 		this.pages = [];
 		this.placements = [];
 		this.selectedPlacementId = null;
+		this.placingSignature = false;
 	}
 
 	selectStamp(id: string | null): void {
 		this.selectedStampId = id;
+		if (id !== null) this.placingSignature = false;
+	}
+
+	/** Enter "place the signature box" mode (next page click drops it). */
+	startPlacingSignature(): void {
+		this.placingSignature = true;
+		this.selectedStampId = null;
+	}
+
+	/** Add (or replace) the single visible signature box on a page. */
+	addSignaturePlacement(p: Omit<Placement, 'id' | 'stampId'>): Placement {
+		this.placements = this.placements.filter((pl) => pl.stampId !== SIGNATURE_STAMP_ID);
+		const placement = this.addPlacement({ ...p, stampId: SIGNATURE_STAMP_ID });
+		this.placingSignature = false;
+		return placement;
+	}
+
+	removeSignature(): void {
+		const sig = this.signaturePlacement;
+		if (sig) this.removePlacement(sig.id);
 	}
 
 	selectPlacement(id: string | null): void {

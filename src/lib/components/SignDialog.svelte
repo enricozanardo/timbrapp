@@ -3,7 +3,7 @@
 	import { editor } from '$lib/stores/editor.svelte';
 	import { buildStampedPdf, savePdf, signedFilename } from '$lib/pdf/save';
 	import * as cie from '$lib/cie/api';
-	import type { CertificateInfo, CieStatus } from '$lib/types';
+	import type { CertificateInfo, CieStatus, SignatureAppearance } from '$lib/types';
 
 	type Props = {
 		open: boolean;
@@ -171,6 +171,8 @@
 		notice = null;
 		try {
 			// Flatten any placed stamps into the PDF first, then sign the result.
+			// The signature box (if any) is drawn by the backend as the signature
+			// appearance, so it's not flattened here.
 			const stamped = await buildStampedPdf({
 				originalBytes: editor.pdfBytes,
 				placements: editor.placements,
@@ -183,6 +185,7 @@
 				pdf: stamped,
 				reason: reason.trim() || undefined,
 				location: location.trim() || undefined,
+				appearance: buildAppearance(),
 				modulePath: modulePathArg()
 			});
 			const path = await savePdf(signed, signedFilename(editor.pdfFileName), editor.pdfSourceDir);
@@ -195,6 +198,37 @@
 		} finally {
 			busy = false;
 		}
+	}
+
+	/** Pull "GIVENNAME SURNAME" (falling back to CN) out of a cert subject DN. */
+	function cardholderName(subject: string): string {
+		const map = new Map<string, string>();
+		for (const part of subject.split(',')) {
+			const eq = part.indexOf('=');
+			if (eq > 0) map.set(part.slice(0, eq).trim().toUpperCase(), part.slice(eq + 1).trim());
+		}
+		const given = map.get('GIVENNAME') ?? map.get('G') ?? '';
+		const surname = map.get('SN') ?? map.get('SURNAME') ?? '';
+		const full = [given, surname].filter(Boolean).join(' ');
+		return full || map.get('CN') || subject;
+	}
+
+	/** Build the visible-signature appearance from the placed box, if any. */
+	function buildAppearance(): SignatureAppearance | undefined {
+		const box = editor.signaturePlacement;
+		if (!box) return undefined;
+		const cert = certs.find((c) => c.idHex === selectedCertId);
+		const name = cert ? cardholderName(cert.subject) : 'Titolare CIE';
+		const d = new Date();
+		const p = (n: number) => String(n).padStart(2, '0');
+		const when = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+		const lines = ['Firmato digitalmente da:', name, `Data: ${when}`];
+		if (reason.trim()) lines.push(`Motivo: ${reason.trim()}`);
+		return {
+			pageIndex: box.pageIndex,
+			rect: [box.x, box.y, box.x + box.width, box.y + box.height],
+			lines
+		};
 	}
 
 	function messageOf(err: unknown): string {
@@ -339,6 +373,16 @@
 							<input id="cie-location" type="text" bind:value={location} disabled={busy} />
 						</div>
 					</details>
+
+					<p class="muted small">
+						{#if editor.signaturePlacement}
+							✒︎ A visible signature stamp will be drawn on page
+							{editor.signaturePlacement.pageIndex + 1}.
+						{:else}
+							Tip: close this dialog and use <strong>“Signature box”</strong> in the toolbar to place
+							a visible “Firmato digitalmente da…” stamp before signing.
+						{/if}
+					</p>
 				{/if}
 			{/if}
 

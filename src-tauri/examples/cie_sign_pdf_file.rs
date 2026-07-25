@@ -31,6 +31,16 @@ fn main() {
     assert!(!pin.is_empty(), "empty PIN");
 
     let pdf = std::fs::read(&in_pdf).expect("read input pdf");
+    // Draw a visible box near the bottom-left of the first page (PDF points).
+    let appearance = pades::SignatureAppearance {
+        page_index: 0,
+        rect: [40.0, 40.0, 300.0, 110.0],
+        lines: vec![
+            "Firmato digitalmente da".to_string(),
+            cert.subject.clone(),
+            "Firma Elettronica Avanzata (CIE)".to_string(),
+        ],
+    };
     let signed = pades::sign_pdf(
         &pdf,
         &module_path,
@@ -39,6 +49,7 @@ fn main() {
         &pin,
         Some("Test signature"),
         None,
+        Some(appearance),
     )
     .expect("sign_pdf");
     std::fs::write(&out_pdf, &signed).expect("write output");

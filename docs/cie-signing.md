@@ -195,10 +195,31 @@ Commands exposed to the frontend (see `src/lib/cie/api.ts`):
 - `cie_enroll` - one-time enrollment ("Abilita CIE") with the full 8-digit PIN.
 - `cie_list_certificates` - list certificates on the card (FEA/nonRepudiation
   first).
-- `cie_sign_raw` - on-card `CKM_SHA256_RSA_PKCS` signature of arbitrary bytes
-  (a proof-of-concept to validate the key + PIN).
-- `cie_sign_pdf` - PAdES-B-B signature of a PDF.
+- `cie_sign_raw` - on-card RSA signature of arbitrary bytes (a proof-of-concept
+  to validate the key + PIN).
+- `cie_sign_pdf` - PAdES-B-B signature of a PDF, with an optional visible
+  signature appearance (see below).
 - `cie_sign_bytes` - detached CAdES-B-B (`.p7s`) signature of any file.
+
+> **Signing mechanism note.** We hash the to-be-signed bytes in software and
+> sign a hand-built SHA-256 `DigestInfo` with raw `CKM_RSA_PKCS`. The IPZS CIE
+> module's combined `CKM_SHA256_RSA_PKCS` is broken - it emits a malformed
+> **SHA-1** `DigestInfo` (the SHA-256 digest truncated to 20 bytes), which every
+> validator rejects as a corrupted signature.
+
+## Visible signature appearance
+
+By default the signature is invisible (a zero-size widget). Optionally the user
+can place a **visible signature box** ("Signature box" in the toolbar), drag/resize
+it like a stamp, and TimbrApp draws a bordered *"Firmato digitalmente da NAME
+SURNAME / Data: …"* stamp as the signature's `/AP` appearance.
+
+- The box coordinates are in PDF points (bottom-left origin), the same space as
+  image stamps, so they map straight onto the signature widget's `/Rect`.
+- The signer name is read from the certificate subject (`GIVENNAME` + `SN`).
+- The appearance is the real signature field's appearance stream (a Helvetica
+  Form XObject), so viewers show it as a clickable signature - it is not a
+  flattened image drawn onto the page.
 
 ## Validating a signed PDF
 

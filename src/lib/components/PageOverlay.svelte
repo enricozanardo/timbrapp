@@ -19,16 +19,32 @@
 		// Ignore clicks on placements / handles (they stop propagation, but still).
 		if (e.target !== e.currentTarget) return;
 
+		const overlay = e.currentTarget as HTMLDivElement;
+		const r = overlay.getBoundingClientRect();
+		const cssX = e.clientX - r.left;
+		const cssY = e.clientY - r.top;
+
+		// Placing the visible signature box takes priority over stamp placement.
+		if (editor.placingSignature) {
+			const widthPt = Math.min(240, pageWidth * 0.45);
+			const rect = buildPlacementAtClick({
+				clickCssX: cssX,
+				clickCssY: cssY,
+				pageHeight,
+				pageWidth,
+				scale,
+				defaultWidthPt: widthPt,
+				aspectRatio: widthPt / 70
+			});
+			editor.addSignaturePlacement({ pageIndex, ...rect });
+			return;
+		}
+
 		const stamp = editor.selectedStamp;
 		if (!stamp) {
 			editor.selectPlacement(null);
 			return;
 		}
-
-		const overlay = e.currentTarget as HTMLDivElement;
-		const r = overlay.getBoundingClientRect();
-		const cssX = e.clientX - r.left;
-		const cssY = e.clientY - r.top;
 
 		const size = await readImageSize(stamp.blob).catch(() => ({ width: 1, height: 1 }));
 		const aspectRatio = size.width / Math.max(1, size.height);
@@ -53,7 +69,7 @@
 
 <div
 	class="overlay"
-	class:placing={editor.selectedStampId !== null}
+	class:placing={editor.selectedStampId !== null || editor.placingSignature}
 	style:width="{pageWidth * scale}px"
 	style:height="{pageHeight * scale}px"
 	role="presentation"
