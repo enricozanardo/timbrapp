@@ -9,7 +9,7 @@
 
 use cryptoki::context::Pkcs11;
 #[cfg(not(target_os = "windows"))]
-use cryptoki::context::CInitializeArgs;
+use cryptoki::context::{CInitializeArgs, CInitializeFlags};
 use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::{Session, UserType};
@@ -171,7 +171,7 @@ fn open_module(module_path: &str) -> CieResult<Pkcs11> {
         guard_ffi("initializing the PKCS#11 module", || {
             // Some modules report "already initialized" if a previous instance
             // did not finalize cleanly; treat that as success.
-            match pkcs11.initialize(CInitializeArgs::OsThreads) {
+            match pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)) {
                 Ok(()) => Ok(()),
                 Err(e) if e.to_string().contains("already been initialized") => {
                     log::warn!("module was already initialized; reusing");
@@ -407,7 +407,7 @@ impl CardSigner {
         let session = pkcs11.open_ro_session(slot)?;
 
         // PIN login. Map common "wrong PIN / locked" errors to a friendly message.
-        if let Err(e) = session.login(UserType::User, Some(&AuthPin::new(pin.to_string()))) {
+        if let Err(e) = session.login(UserType::User, Some(&AuthPin::new(pin.into()))) {
             if let cryptoki::error::Error::Pkcs11(rv, _) = &e {
                 use cryptoki::error::RvError;
                 if matches!(
