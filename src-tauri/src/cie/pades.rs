@@ -5,7 +5,7 @@
 //! those bytes in place so the byte offsets stay exact. The CMS/PKCS#7 blob is
 //! produced by [`crate::cie::cms`] with the raw signature done on the CIE chip.
 
-use lopdf::{Dictionary, Document, Object, Stream, StringFormat};
+use lopdf::{Dictionary, Document, IncrementalDocument, Object, ObjectId, Stream, StringFormat};
 use serde::Deserialize;
 
 use crate::cie::cms;
@@ -48,8 +48,22 @@ pub fn sign_pdf(
 ) -> CieResult<Vec<u8>> {
     let signer = CardSigner::open(module_path, slot_id, cert_id_hex, pin)?;
 
-    let mut buf = build_placeholder_pdf(pdf, reason, location, appearance.as_ref())?;
-    let (contents_lt, contents_gt) = find_contents_span(&buf)?;
+    // A PDF that already carries a signature (`/ByteRange` only appears in
+    // signature dictionaries) must be extended with an *incremental update* so
+    // the existing signature's signed byte ranges stay untouched. Signing an
+    // unsigned PDF uses the simpler full rewrite.
+    let already_signed = find(pdf, b"/ByteRange", 0).is_some();
+    let (mut buf, search_from) = if already_signed {
+        build_incremental_pdf(pdf, reason, location, appearance.as_ref())?
+    } else {
+        (
+            build_placeholder_pdf(pdf, reason, location, appearance.as_ref())?,
+            0,
+        )
+    };
+
+    // Locate *our* newly-added signature (the one at/after `search_from`).
+    let (contents_lt, contents_gt) = find_contents_span(&buf, search_from)?;
 
     // ByteRange covers everything except the hex between < and >.
     let br = [
@@ -58,7 +72,7 @@ pub fn sign_pdf(
         contents_gt as i64,
         (buf.len() - contents_gt) as i64,
     ];
-    patch_byte_range(&mut buf, br)?;
+    patch_byte_range(&mut buf, br, search_from)?;
 
     // Digest over the two signed ranges (ByteRange is already final).
     let digest = sha256_ranges(&buf, contents_lt + 1, contents_gt);
@@ -104,62 +118,9 @@ fn build_placeholder_pdf(
         .map(|a| a.rect)
         .unwrap_or([0.0, 0.0, 0.0, 0.0]);
 
-    // --- Signature dictionary ---
-    let mut sig = Dictionary::new();
-    sig.set("Type", Object::Name(b"Sig".to_vec()));
-    sig.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
-    sig.set("SubFilter", Object::Name(b"ETSI.CAdES.detached".to_vec()));
-    sig.set(
-        "ByteRange",
-        Object::Array(vec![
-            Object::Integer(0),
-            Object::Integer(BR_PLACEHOLDER),
-            Object::Integer(BR_PLACEHOLDER),
-            Object::Integer(BR_PLACEHOLDER),
-        ]),
-    );
-    sig.set(
-        "Contents",
-        Object::String(vec![0u8; CONTENTS_BYTES], StringFormat::Hexadecimal),
-    );
-    sig.set(
-        "M",
-        Object::String(pdf_date_now().into_bytes(), StringFormat::Literal),
-    );
-    if let Some(r) = reason {
-        sig.set("Reason", Object::String(r.as_bytes().to_vec(), StringFormat::Literal));
-    }
-    if let Some(l) = location {
-        sig.set("Location", Object::String(l.as_bytes().to_vec(), StringFormat::Literal));
-    }
-    let sig_id = doc.add_object(sig);
-
-    // --- Invisible signature field / widget ---
-    let mut field = Dictionary::new();
-    field.set("Type", Object::Name(b"Annot".to_vec()));
-    field.set("Subtype", Object::Name(b"Widget".to_vec()));
-    field.set("FT", Object::Name(b"Sig".to_vec()));
-    field.set(
-        "Rect",
-        Object::Array(vec![
-            Object::Real(rect[0]),
-            Object::Real(rect[1]),
-            Object::Real(rect[2]),
-            Object::Real(rect[3]),
-        ]),
-    );
-    field.set(
-        "T",
-        Object::String(b"Signature1".to_vec(), StringFormat::Literal),
-    );
-    field.set("V", Object::Reference(sig_id));
-    field.set("P", Object::Reference(page_id));
-    field.set("F", Object::Integer(132)); // Print (4) + Locked (128)
-    if let Some(xobj_id) = appearance_ref {
-        let mut ap = Dictionary::new();
-        ap.set("N", Object::Reference(xobj_id));
-        field.set("AP", Object::Dictionary(ap));
-    }
+    // --- Signature dictionary + invisible field / widget ---
+    let sig_id = doc.add_object(build_sig_dict(reason, location));
+    let field = build_widget_field(sig_id, page_id, rect, appearance_ref, "Signature1");
     let field_id = doc.add_object(field);
 
     // --- Attach widget to the page's /Annots ---
@@ -223,6 +184,262 @@ fn build_placeholder_pdf(
     doc.save_to(&mut out)
         .map_err(|e| CieError::Pdf(e.to_string()))?;
     Ok(out)
+}
+
+/// Build the (visible or invisible) signature via an **incremental update**: the
+/// original bytes are preserved verbatim and only the new/changed objects (the
+/// signature dict, its widget, the touched page and AcroForm) are appended. This
+/// keeps every existing signature's `/ByteRange` valid.
+///
+/// Returns the serialized PDF plus the byte offset from which our *new*
+/// signature dictionary can be located (i.e. the length of the preserved
+/// original, so searches skip pre-existing signatures).
+fn build_incremental_pdf(
+    pdf: &[u8],
+    reason: Option<&str>,
+    location: Option<&str>,
+    appearance: Option<&SignatureAppearance>,
+) -> CieResult<(Vec<u8>, usize)> {
+    let prev = Document::load_mem(pdf)?;
+
+    // --- Extract everything we need from `prev` before it is moved. ---
+    let root_id = prev
+        .trailer
+        .get(b"Root")
+        .map_err(CieError::from)?
+        .as_reference()
+        .map_err(CieError::from)?;
+
+    let page_ids: Vec<ObjectId> = prev.get_pages().into_values().collect();
+    let target_page = appearance.map(|a| a.page_index).unwrap_or(0);
+    let page_id = *page_ids
+        .get(target_page)
+        .or_else(|| page_ids.first())
+        .ok_or_else(|| CieError::Pdf("PDF has no pages".into()))?;
+
+    // How is /Annots stored on the target page? (inline array vs indirect array)
+    let annots_ref: Option<ObjectId> = prev
+        .get_object(page_id)
+        .ok()
+        .and_then(|o| o.as_dict().ok())
+        .and_then(|d| d.get(b"Annots").ok())
+        .and_then(|o| o.as_reference().ok());
+
+    // How is the AcroForm stored on the catalog?
+    let catalog = prev
+        .get_object(root_id)
+        .ok()
+        .and_then(|o| o.as_dict().ok());
+    let acroform_ref: Option<ObjectId> = catalog
+        .and_then(|d| d.get(b"AcroForm").ok())
+        .and_then(|o| o.as_reference().ok());
+    let acroform_inline = catalog
+        .and_then(|d| d.get(b"AcroForm").ok())
+        .map(|o| o.as_dict().is_ok())
+        .unwrap_or(false);
+    // If the AcroForm's /Fields is an indirect array, we edit that object.
+    let fields_ref: Option<ObjectId> = acroform_ref
+        .and_then(|id| prev.get_object(id).ok())
+        .and_then(|o| o.as_dict().ok())
+        .and_then(|d| d.get(b"Fields").ok())
+        .and_then(|o| o.as_reference().ok());
+
+    let prev_len = pdf.len();
+    let mut idoc = IncrementalDocument::create_from(pdf.to_vec(), prev);
+
+    // Build the appearance form XObject (added to the *new* document).
+    let appearance_ref = match appearance {
+        Some(ap) => Some(build_appearance_xobject(&mut idoc.new_document, ap)?),
+        None => None,
+    };
+    let rect = appearance.map(|a| a.rect).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+
+    // Signature dict + widget field (unique field name to avoid clashing with
+    // the existing signature's /T).
+    let sig_id = idoc.new_document.add_object(build_sig_dict(reason, location));
+    let field_name = format!("Signature{}", prev_len); // just needs to be unique
+    let field = build_widget_field(sig_id, page_id, rect, appearance_ref, &field_name);
+    let field_id = idoc.new_document.add_object(field);
+
+    // --- Append the widget to the page's /Annots (clone page into the update) ---
+    idoc.opt_clone_object_to_new_document(page_id)?;
+    if let Some(arr_id) = annots_ref {
+        idoc.opt_clone_object_to_new_document(arr_id)?;
+        let arr = idoc
+            .new_document
+            .get_object_mut(arr_id)
+            .map_err(CieError::from)?
+            .as_array_mut()
+            .map_err(CieError::from)?;
+        arr.push(Object::Reference(field_id));
+    } else {
+        let page = idoc
+            .new_document
+            .get_object_mut(page_id)
+            .map_err(CieError::from)?
+            .as_dict_mut()
+            .map_err(CieError::from)?;
+        match page.get(b"Annots") {
+            Ok(Object::Array(existing)) => {
+                let mut arr = existing.clone();
+                arr.push(Object::Reference(field_id));
+                page.set("Annots", Object::Array(arr));
+            }
+            _ => page.set("Annots", Object::Array(vec![Object::Reference(field_id)])),
+        }
+    }
+
+    // --- Register the field in the AcroForm ---
+    if let Some(acro_id) = acroform_ref {
+        idoc.opt_clone_object_to_new_document(acro_id)?;
+        if let Some(f_id) = fields_ref {
+            // /Fields is an indirect array object.
+            idoc.opt_clone_object_to_new_document(f_id)?;
+            let arr = idoc
+                .new_document
+                .get_object_mut(f_id)
+                .map_err(CieError::from)?
+                .as_array_mut()
+                .map_err(CieError::from)?;
+            arr.push(Object::Reference(field_id));
+            let acro = idoc
+                .new_document
+                .get_object_mut(acro_id)
+                .map_err(CieError::from)?
+                .as_dict_mut()
+                .map_err(CieError::from)?;
+            acro.set("SigFlags", Object::Integer(3));
+        } else {
+            let acro = idoc
+                .new_document
+                .get_object_mut(acro_id)
+                .map_err(CieError::from)?
+                .as_dict_mut()
+                .map_err(CieError::from)?;
+            append_field(acro, field_id);
+            acro.set("SigFlags", Object::Integer(3));
+        }
+    } else if acroform_inline {
+        idoc.opt_clone_object_to_new_document(root_id)?;
+        let cat = idoc
+            .new_document
+            .get_object_mut(root_id)
+            .map_err(CieError::from)?
+            .as_dict_mut()
+            .map_err(CieError::from)?;
+        let acro = cat
+            .get_mut(b"AcroForm")
+            .map_err(CieError::from)?
+            .as_dict_mut()
+            .map_err(CieError::from)?;
+        append_field(acro, field_id);
+        acro.set("SigFlags", Object::Integer(3));
+    } else {
+        // No AcroForm at all: create one and point the (cloned) catalog at it.
+        let mut acro = Dictionary::new();
+        acro.set("Fields", Object::Array(vec![Object::Reference(field_id)]));
+        acro.set("SigFlags", Object::Integer(3));
+        let acro_id = idoc.new_document.add_object(acro);
+        idoc.opt_clone_object_to_new_document(root_id)?;
+        let cat = idoc
+            .new_document
+            .get_object_mut(root_id)
+            .map_err(CieError::from)?
+            .as_dict_mut()
+            .map_err(CieError::from)?;
+        cat.set("AcroForm", Object::Reference(acro_id));
+    }
+
+    // Defensive: the trailer is cloned from the previous xref stream dict; drop
+    // keys that the writer regenerates or that would misdescribe the new stream.
+    idoc.new_document.trailer.remove(b"DecodeParms");
+    idoc.new_document.trailer.remove(b"Filter");
+
+    let mut out = Vec::new();
+    idoc.save_to(&mut out)
+        .map_err(|e| CieError::Pdf(e.to_string()))?;
+    Ok((out, prev_len))
+}
+
+/// Append a field reference to an AcroForm's `/Fields` (inline array form).
+fn append_field(acro: &mut Dictionary, field_id: ObjectId) {
+    match acro.get(b"Fields") {
+        Ok(Object::Array(existing)) => {
+            let mut arr = existing.clone();
+            arr.push(Object::Reference(field_id));
+            acro.set("Fields", Object::Array(arr));
+        }
+        _ => acro.set("Fields", Object::Array(vec![Object::Reference(field_id)])),
+    }
+}
+
+/// The PAdES signature dictionary with fixed-size `/ByteRange` and `/Contents`
+/// placeholders that are patched after serialization.
+fn build_sig_dict(reason: Option<&str>, location: Option<&str>) -> Dictionary {
+    let mut sig = Dictionary::new();
+    sig.set("Type", Object::Name(b"Sig".to_vec()));
+    sig.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
+    sig.set("SubFilter", Object::Name(b"ETSI.CAdES.detached".to_vec()));
+    sig.set(
+        "ByteRange",
+        Object::Array(vec![
+            Object::Integer(0),
+            Object::Integer(BR_PLACEHOLDER),
+            Object::Integer(BR_PLACEHOLDER),
+            Object::Integer(BR_PLACEHOLDER),
+        ]),
+    );
+    sig.set(
+        "Contents",
+        Object::String(vec![0u8; CONTENTS_BYTES], StringFormat::Hexadecimal),
+    );
+    sig.set(
+        "M",
+        Object::String(pdf_date_now().into_bytes(), StringFormat::Literal),
+    );
+    if let Some(r) = reason {
+        sig.set("Reason", Object::String(r.as_bytes().to_vec(), StringFormat::Literal));
+    }
+    if let Some(l) = location {
+        sig.set("Location", Object::String(l.as_bytes().to_vec(), StringFormat::Literal));
+    }
+    sig
+}
+
+/// The signature widget annotation (visible if `appearance_ref` is set).
+fn build_widget_field(
+    sig_id: ObjectId,
+    page_id: ObjectId,
+    rect: [f32; 4],
+    appearance_ref: Option<ObjectId>,
+    field_name: &str,
+) -> Dictionary {
+    let mut field = Dictionary::new();
+    field.set("Type", Object::Name(b"Annot".to_vec()));
+    field.set("Subtype", Object::Name(b"Widget".to_vec()));
+    field.set("FT", Object::Name(b"Sig".to_vec()));
+    field.set(
+        "Rect",
+        Object::Array(vec![
+            Object::Real(rect[0]),
+            Object::Real(rect[1]),
+            Object::Real(rect[2]),
+            Object::Real(rect[3]),
+        ]),
+    );
+    field.set(
+        "T",
+        Object::String(field_name.as_bytes().to_vec(), StringFormat::Literal),
+    );
+    field.set("V", Object::Reference(sig_id));
+    field.set("P", Object::Reference(page_id));
+    field.set("F", Object::Integer(132)); // Print (4) + Locked (128)
+    if let Some(xobj_id) = appearance_ref {
+        let mut ap = Dictionary::new();
+        ap.set("N", Object::Reference(xobj_id));
+        field.set("AP", Object::Dictionary(ap));
+    }
+    field
 }
 
 /// Build a Form XObject that draws the visible signature box (a thin border
@@ -314,8 +531,8 @@ fn escape_pdf_text(s: &str) -> String {
 /// Anchored to the unique `/ByteRange` key (present only in the signature dict,
 /// which we just added), so a page's `/Contents 5 0 R` is never mistaken for it.
 /// Our sig dict serializes `/ByteRange` immediately before `/Contents`.
-fn find_contents_span(buf: &[u8]) -> CieResult<(usize, usize)> {
-    let byte_range = find(buf, b"/ByteRange", 0)
+fn find_contents_span(buf: &[u8], search_from: usize) -> CieResult<(usize, usize)> {
+    let byte_range = find(buf, b"/ByteRange", search_from)
         .ok_or_else(|| CieError::Pdf("/ByteRange not found in serialized PDF".into()))?;
     let contents = find(buf, b"/Contents", byte_range)
         .ok_or_else(|| CieError::Pdf("/Contents not found after /ByteRange".into()))?;
@@ -327,8 +544,9 @@ fn find_contents_span(buf: &[u8]) -> CieResult<(usize, usize)> {
 }
 
 /// Overwrite the `/ByteRange` array in place, preserving its byte length.
-fn patch_byte_range(buf: &mut [u8], br: [i64; 4]) -> CieResult<()> {
-    let key = find(buf, b"/ByteRange", 0)
+/// `search_from` skips any earlier (pre-existing) signatures.
+fn patch_byte_range(buf: &mut [u8], br: [i64; 4], search_from: usize) -> CieResult<()> {
+    let key = find(buf, b"/ByteRange", search_from)
         .ok_or_else(|| CieError::Pdf("/ByteRange not found".into()))?;
     let lb = find(buf, b"[", key).ok_or_else(|| CieError::Pdf("ByteRange '[' not found".into()))?;
     let rb = find(buf, b"]", lb).ok_or_else(|| CieError::Pdf("ByteRange ']' not found".into()))?;
@@ -392,4 +610,110 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .windows(needle.len())
         .position(|w| w == needle)
         .map(|p| p + from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal, valid single-page PDF.
+    fn minimal_pdf() -> Vec<u8> {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name(b"Page".to_vec()));
+        page.set("Parent", Object::Reference(pages_id));
+        page.set(
+            "MediaBox",
+            Object::Array(vec![
+                0.into(),
+                0.into(),
+                612.into(),
+                792.into(),
+            ]),
+        );
+        let page_id = doc.add_object(page);
+
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name(b"Pages".to_vec()));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        pages.set("Count", Object::Integer(1));
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(catalog);
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+
+        let mut out = Vec::new();
+        doc.save_to(&mut out).unwrap();
+        out
+    }
+
+    /// Count how many signature dictionaries a PDF carries.
+    fn count_byteranges(buf: &[u8]) -> usize {
+        let mut n = 0;
+        let mut pos = 0;
+        while let Some(i) = find(buf, b"/ByteRange", pos) {
+            n += 1;
+            pos = i + 1;
+        }
+        n
+    }
+
+    #[test]
+    fn incremental_update_preserves_first_signature_bytes() {
+        // Simulate a first signature by building a placeholder PDF (it contains
+        // a `/ByteRange`, so `sign_pdf` would treat it as already-signed).
+        let base = minimal_pdf();
+        let first = build_placeholder_pdf(&base, Some("first"), None, None).unwrap();
+        assert_eq!(count_byteranges(&first), 1);
+
+        // Now add a second signature via the incremental path.
+        let (out, prev_len) = build_incremental_pdf(&first, Some("second"), None, None).unwrap();
+
+        // The original bytes must be preserved verbatim (byte-for-byte prefix),
+        // otherwise the first signature's ByteRange would break.
+        assert_eq!(prev_len, first.len());
+        assert_eq!(&out[..first.len()], &first[..]);
+
+        // The result must now carry two signatures and still parse.
+        assert_eq!(count_byteranges(&out), 2);
+        let reparsed = Document::load_mem(&out).expect("incremental PDF must parse");
+        // AcroForm must list two fields.
+        let root = reparsed
+            .trailer
+            .get(b"Root")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let acro_ref = reparsed
+            .get_object(root)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"AcroForm")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let fields = reparsed
+            .get_object(acro_ref)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Fields")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(fields.len(), 2, "both signature fields must be registered");
+
+        // The new signature's placeholder must be locatable and patchable using
+        // the returned search offset.
+        let (lt, gt) = find_contents_span(&out, prev_len).unwrap();
+        assert!(lt >= prev_len && gt > lt);
+        let mut patched = out.clone();
+        let br = [0i64, (lt + 1) as i64, gt as i64, (patched.len() - gt) as i64];
+        patch_byte_range(&mut patched, br, prev_len).expect("second ByteRange must fit");
+    }
 }
