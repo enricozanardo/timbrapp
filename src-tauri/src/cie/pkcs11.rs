@@ -186,7 +186,8 @@ fn open_module(module_path: &str) -> CieResult<Pkcs11> {
 }
 
 fn find_slot(pkcs11: &Pkcs11, slot_id: u64) -> CieResult<Slot> {
-    let slots = pkcs11.get_slots_with_token()?;
+    log::info!("find_slot: C_GetSlotList (all) looking for slot {slot_id}");
+    let slots = pkcs11.get_all_slots()?;
     slots
         .into_iter()
         .find(|s| s.id() == slot_id)
@@ -198,19 +199,41 @@ fn find_slot(pkcs11: &Pkcs11, slot_id: u64) -> CieResult<Slot> {
 /// but no card on it". Returns 0 on any error (best-effort diagnostic).
 pub fn count_all_slots(module_path: &str) -> usize {
     match open_module(module_path) {
-        Ok(pkcs11) => pkcs11.get_all_slots().map(|s| s.len()).unwrap_or(0),
+        Ok(pkcs11) => {
+            log::info!("scan: C_GetSlotList (all slots, token not required)");
+            let n = pkcs11.get_all_slots().map(|s| s.len()).unwrap_or(0);
+            log::info!("scan: C_GetSlotList (all) -> {n} slot(s)");
+            n
+        }
         Err(_) => 0,
     }
 }
 
 /// List readers/slots that currently have a token (card) present.
+///
+/// We enumerate via `get_all_slots()` (C_GetSlotList with tokenPresent=FALSE)
+/// and read the per-slot `CKF_TOKEN_PRESENT` flag from `C_GetSlotInfo`, rather
+/// than asking the module to pre-filter with tokenPresent=TRUE. Some vendor
+/// modules (incl. the Italian CIE middleware) are fragile with the pre-filter
+/// and with `C_GetTokenInfo` on a contactless card, so we keep the calls
+/// minimal and log each boundary to localize any native fault.
 pub fn list_readers(module_path: &str) -> CieResult<Vec<ReaderInfo>> {
     let pkcs11 = open_module(module_path)?;
-    let slots = pkcs11.get_slots_with_token()?;
+    log::info!("scan: C_GetSlotList (all slots)");
+    let slots = pkcs11.get_all_slots()?;
+    log::info!("scan: C_GetSlotList -> {} slot(s) total", slots.len());
     let mut out = Vec::new();
     for slot in slots {
+        let id = slot.id();
+        log::info!("scan: C_GetSlotInfo for slot {id}");
         let slot_info = pkcs11.get_slot_info(slot)?;
+        if !slot_info.token_present() {
+            log::info!("scan: slot {id} has no token present; skipping");
+            continue;
+        }
+        log::info!("scan: C_GetTokenInfo for slot {id}");
         let token_info = pkcs11.get_token_info(slot).ok();
+        log::info!("scan: slot {id} token info read ok={}", token_info.is_some());
         out.push(ReaderInfo {
             slot_id: slot.id(),
             slot_description: slot_info.slot_description().trim().to_string(),
@@ -232,14 +255,27 @@ pub fn list_readers(module_path: &str) -> CieResult<Vec<ReaderInfo>> {
 pub fn is_enrolled(module_path: &str, slot_id: u64) -> CieResult<bool> {
     let pkcs11 = open_module(module_path)?;
     let slot = find_slot(&pkcs11, slot_id)?;
+    log::info!("is_enrolled: C_OpenSession (ro) on slot {slot_id}");
     match pkcs11.open_ro_session(slot) {
-        Ok(session) => match session.find_objects(&[Attribute::Class(ObjectClass::CERTIFICATE)]) {
-            Ok(handles) => Ok(!handles.is_empty()),
-            // Session opened but card data can't be read yet -> not enrolled.
-            Err(_) => Ok(false),
-        },
+        Ok(session) => {
+            log::info!("is_enrolled: C_FindObjects (certificates)");
+            match session.find_objects(&[Attribute::Class(ObjectClass::CERTIFICATE)]) {
+                Ok(handles) => {
+                    log::info!("is_enrolled: found {} certificate object(s)", handles.len());
+                    Ok(!handles.is_empty())
+                }
+                // Session opened but card data can't be read yet -> not enrolled.
+                Err(e) => {
+                    log::info!("is_enrolled: find_objects failed ({e}) -> not enrolled");
+                    Ok(false)
+                }
+            }
+        }
         // Opening the session itself fails on an un-enrolled contactless CIE.
-        Err(_) => Ok(false),
+        Err(e) => {
+            log::info!("is_enrolled: open_ro_session failed ({e}) -> not enrolled");
+            Ok(false)
+        }
     }
 }
 
@@ -259,9 +295,12 @@ fn attr_bytes(attrs: &[Attribute], want: AttributeType) -> Option<Vec<u8>> {
 pub fn list_certificates(module_path: &str, slot_id: u64) -> CieResult<Vec<CertificateInfo>> {
     let pkcs11 = open_module(module_path)?;
     let slot = find_slot(&pkcs11, slot_id)?;
+    log::info!("list_certificates: C_OpenSession (ro) on slot {slot_id}");
     let session = pkcs11.open_ro_session(slot)?;
 
+    log::info!("list_certificates: C_FindObjects (certificates)");
     let handles = session.find_objects(&[Attribute::Class(ObjectClass::CERTIFICATE)])?;
+    log::info!("list_certificates: found {} certificate object(s)", handles.len());
     let mut out = Vec::new();
     for handle in handles {
         let attrs = session.get_attributes(
