@@ -7,7 +7,9 @@
 //! PKCS#11 slots, which avoids a build-time dependency on `libpcsclite` (handy
 //! for developing inside WSL where PC/SC is unavailable).
 
-use cryptoki::context::{CInitializeArgs, Pkcs11};
+use cryptoki::context::Pkcs11;
+#[cfg(not(target_os = "windows"))]
+use cryptoki::context::CInitializeArgs;
 use cryptoki::mechanism::Mechanism;
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
 use cryptoki::session::{Session, UserType};
@@ -91,6 +93,65 @@ fn guard_ffi<T>(what: &str, f: impl FnOnce() -> CieResult<T>) -> CieResult<T> {
     }
 }
 
+/// Call the module's `C_Initialize` directly with `pInitArgs = NULL`.
+///
+/// The Italian `CIEPKI.dll` (and similar CSP-derived Windows modules) are
+/// single-threaded and *crash* (access violation) when initialized with
+/// `CKF_OS_LOCKING_OK` and a non-NULL args pointer. The PKCS#11 spec says a
+/// single-threaded caller must pass `pInitArgs = NULL`, but `cryptoki`'s safe
+/// `Pkcs11::initialize` always sets OS locking. So on Windows we load the same
+/// module once more (`LoadLibrary` is ref-counted, so it's the same in-memory
+/// instance `cryptoki` uses) and invoke `C_Initialize(NULL)` ourselves.
+///
+/// `cryptoki` never gates other calls on its internal "initialized" flag and
+/// always calls `C_Finalize(NULL)` on drop, so the module stays balanced.
+#[cfg(target_os = "windows")]
+fn manual_c_initialize(module_path: &str) -> CieResult<()> {
+    use std::os::raw::{c_ulong, c_void};
+    const CKR_OK: c_ulong = 0;
+    const CKR_CRYPTOKI_ALREADY_INITIALIZED: c_ulong = 0x0000_0191;
+    type CInitializeFn = unsafe extern "C" fn(*mut c_void) -> c_ulong;
+    type CGetFunctionListFn = unsafe extern "C" fn(*mut *mut c_void) -> c_ulong;
+
+    unsafe {
+        let lib = libloading::Library::new(module_path)
+            .map_err(|e| CieError::Other(format!("failed to load module for init: {e}")))?;
+
+        // Preferred: call the directly-exported C_Initialize symbol.
+        let rv = if let Ok(sym) = lib.get::<CInitializeFn>(b"C_Initialize\0") {
+            sym(std::ptr::null_mut())
+        } else {
+            // Fallback: fetch C_Initialize via the function list. On x64 the
+            // CK_FUNCTION_LIST starts with CK_VERSION (2 bytes) then, after
+            // 8-byte pointer alignment, the C_Initialize pointer at offset 8.
+            let get_list: libloading::Symbol<CGetFunctionListFn> =
+                lib.get(b"C_GetFunctionList\0").map_err(|e| {
+                    CieError::Other(format!("module exports neither C_Initialize nor C_GetFunctionList: {e}"))
+                })?;
+            let mut list_ptr: *mut c_void = std::ptr::null_mut();
+            let grv = get_list(&mut list_ptr);
+            if grv != CKR_OK || list_ptr.is_null() {
+                return Err(CieError::Other(format!(
+                    "C_GetFunctionList failed (CK_RV=0x{grv:08X})"
+                )));
+            }
+            let c_init_ptr = *(list_ptr as *const u8).add(8).cast::<*const c_void>();
+            if c_init_ptr.is_null() {
+                return Err(CieError::Other("C_Initialize function pointer is null".into()));
+            }
+            let c_init: CInitializeFn = std::mem::transmute(c_init_ptr);
+            c_init(std::ptr::null_mut())
+        };
+
+        match rv {
+            CKR_OK | CKR_CRYPTOKI_ALREADY_INITIALIZED => Ok(()),
+            other => Err(CieError::Other(format!(
+                "C_Initialize(NULL) failed (CK_RV=0x{other:08X})"
+            ))),
+        }
+    }
+}
+
 /// Load + initialize the PKCS#11 module.
 fn open_module(module_path: &str) -> CieResult<Pkcs11> {
     if !Path::new(module_path).exists() {
@@ -98,19 +159,28 @@ fn open_module(module_path: &str) -> CieResult<Pkcs11> {
     }
     log::info!("loading PKCS#11 module: {module_path}");
     let pkcs11 = guard_ffi("loading the PKCS#11 module", || Ok(Pkcs11::new(module_path)?))?;
-    log::info!("initializing PKCS#11 module");
-    guard_ffi("initializing the PKCS#11 module", || {
-        // Some modules report "already initialized" if a previous instance did
-        // not finalize cleanly; treat that as success rather than failing.
-        match pkcs11.initialize(CInitializeArgs::OsThreads) {
-            Ok(()) => Ok(()),
-            Err(e) if e.to_string().contains("already been initialized") => {
-                log::warn!("module was already initialized; reusing");
-                Ok(())
+
+    #[cfg(target_os = "windows")]
+    {
+        log::info!("initializing PKCS#11 module (NULL args, single-threaded)");
+        guard_ffi("initializing the PKCS#11 module", || manual_c_initialize(module_path))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        log::info!("initializing PKCS#11 module (OS locking)");
+        guard_ffi("initializing the PKCS#11 module", || {
+            // Some modules report "already initialized" if a previous instance
+            // did not finalize cleanly; treat that as success.
+            match pkcs11.initialize(CInitializeArgs::OsThreads) {
+                Ok(()) => Ok(()),
+                Err(e) if e.to_string().contains("already been initialized") => {
+                    log::warn!("module was already initialized; reusing");
+                    Ok(())
+                }
+                Err(e) => Err(CieError::from(e)),
             }
-            Err(e) => Err(CieError::from(e)),
-        }
-    })?;
+        })?;
+    }
     log::info!("PKCS#11 module ready");
     Ok(pkcs11)
 }
