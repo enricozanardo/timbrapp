@@ -138,19 +138,29 @@ pub fn abilita_cie(module_path: &str, pin: &str) -> CieResult<EnrollOutcome> {
         CString::new(pin).map_err(|_| CieError::Other("PIN contains a NUL byte".into()))?;
     let mut attempts: c_int = -1;
 
+    log::info!("enroll: loading module for AbilitaCIE: {module_path}");
     let code: i32 = unsafe {
         let lib = Library::new(module_path)
             .map_err(|e| CieError::Other(format!("failed to load module '{module_path}': {e}")))?;
-        let func: Symbol<AbilitaCieFn> = lib
-            .get(b"AbilitaCIE\0")
-            .map_err(|e| CieError::Other(format!("module has no AbilitaCIE symbol: {e}")))?;
-        func(
+        log::info!("enroll: resolving AbilitaCIE symbol");
+        let func: Symbol<AbilitaCieFn> = lib.get(b"AbilitaCIE\0").map_err(|e| {
+            log::error!("enroll: AbilitaCIE symbol not found: {e}");
+            CieError::Other(format!(
+                "This CIE middleware ({module_path}) does not expose the AbilitaCIE \
+                 enrollment function. Pair the card once with the official CIEID app, \
+                 then signing will work here. (details: {e})"
+            ))
+        })?;
+        log::info!("enroll: calling AbilitaCIE (single attempt)");
+        let rv = func(
             std::ptr::null(),
             pin_c.as_ptr(),
             &mut attempts as *mut c_int,
             progress_cb,
             completed_cb,
-        ) as i32
+        ) as i32;
+        log::info!("enroll: AbilitaCIE returned code {rv} (attempts_out={attempts})");
+        rv
     };
 
     let (ok, consumed_attempt, message) = code_message(code);
