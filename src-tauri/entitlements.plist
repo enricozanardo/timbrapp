@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		The CIE PKCS#11 middleware (libcie-pkcs11.dylib) is signed by IPZS with
+		a different Apple Team ID than this app. Under the notarized hardened
+		runtime, macOS library validation refuses to dlopen a library whose
+		Team ID does not match the loading process ("different Team IDs"),
+		which breaks CIE signing. Disabling library validation lets us load the
+		system-installed middleware while keeping the hardened runtime on.
+	-->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>
