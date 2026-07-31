@@ -31,9 +31,9 @@ pub struct SignatureAppearance {
 /// + one certificate) is a few KB, so 16 KiB is comfortably safe.
 const CONTENTS_BYTES: usize = 16384;
 
-/// 10-digit placeholder used for each of the last three `/ByteRange` entries so
-/// there is always room to patch in the real offsets afterwards.
-const BR_PLACEHOLDER: i64 = 1_000_000_000;
+/// 12-digit placeholder used for each `/ByteRange` entry so there is always
+/// room to patch in the real offsets afterwards (covers PDFs up to ~1 TiB).
+const BR_PLACEHOLDER: i64 = 100_000_000_000;
 
 /// Sign `pdf` with the CIE and return the signed PDF bytes.
 pub fn sign_pdf(
@@ -53,17 +53,16 @@ pub fn sign_pdf(
     // the existing signature's signed byte ranges stay untouched. Signing an
     // unsigned PDF uses the simpler full rewrite.
     let already_signed = find(pdf, b"/ByteRange", 0).is_some();
-    let (mut buf, search_from) = if already_signed {
-        build_incremental_pdf(pdf, reason, location, appearance.as_ref())?
+    let mut buf = if already_signed {
+        build_incremental_pdf(pdf, reason, location, appearance.as_ref())?.0
     } else {
-        (
-            build_placeholder_pdf(pdf, reason, location, appearance.as_ref())?,
-            0,
-        )
+        build_placeholder_pdf(pdf, reason, location, appearance.as_ref())?
     };
 
-    // Locate *our* newly-added signature (the one at/after `search_from`).
-    let (contents_lt, contents_gt) = find_contents_span(&buf, search_from)?;
+    // Always target the *last* hex `/Contents` signature in the file — that is
+    // the placeholder we just appended. Matching an earlier signature (often
+    // with a short, already-filled `/ByteRange`) caused "placeholder too small".
+    let (contents_lt, contents_gt, br_key) = find_last_signature_span(&buf)?;
 
     // ByteRange covers everything except the hex between < and >.
     let br = [
@@ -72,7 +71,7 @@ pub fn sign_pdf(
         contents_gt as i64,
         (buf.len() - contents_gt) as i64,
     ];
-    patch_byte_range(&mut buf, br, search_from)?;
+    patch_byte_range_at(&mut buf, br, br_key)?;
 
     // Digest over the two signed ranges (ByteRange is already final).
     let digest = sha256_ranges(&buf, contents_lt + 1, contents_gt);
@@ -526,35 +525,53 @@ fn escape_pdf_text(s: &str) -> String {
     out
 }
 
-/// Locate the `<` and `>` byte offsets of the signature `/Contents` hex string.
+/// Locate the last PAdES signature placeholder in `buf`.
 ///
-/// Anchored to the unique `/ByteRange` key (present only in the signature dict,
-/// which we just added), so a page's `/Contents 5 0 R` is never mistaken for it.
-/// Our sig dict serializes `/ByteRange` immediately before `/Contents`.
-fn find_contents_span(buf: &[u8], search_from: usize) -> CieResult<(usize, usize)> {
-    let byte_range = find(buf, b"/ByteRange", search_from)
-        .ok_or_else(|| CieError::Pdf("/ByteRange not found in serialized PDF".into()))?;
-    let contents = find(buf, b"/Contents", byte_range)
-        .ok_or_else(|| CieError::Pdf("/Contents not found after /ByteRange".into()))?;
-    let lt = find(buf, b"<", contents)
-        .ok_or_else(|| CieError::Pdf("Contents opening '<' not found".into()))?;
-    let gt = find(buf, b">", lt)
-        .ok_or_else(|| CieError::Pdf("Contents closing '>' not found".into()))?;
-    Ok((lt, gt))
+/// Returns `(contents_lt, contents_gt, byterange_key_offset)` for the last
+/// `/ByteRange` that is followed by a hex `/Contents <...>`. Page content
+/// streams (`/Contents 5 0 R`) are skipped because they have no `<` hex string
+/// immediately after `/Contents`.
+fn find_last_signature_span(buf: &[u8]) -> CieResult<(usize, usize, usize)> {
+    let mut pos = 0;
+    let mut last: Option<(usize, usize, usize)> = None;
+    while let Some(byte_range) = find(buf, b"/ByteRange", pos) {
+        pos = byte_range + 1;
+        let Some(contents) = find(buf, b"/Contents", byte_range) else {
+            continue;
+        };
+        // Only accept hex string Contents (signature blob), not object refs.
+        let Some(lt) = find(buf, b"<", contents) else {
+            continue;
+        };
+        // Reject `/Contents 5 0 R` cases where `<` belongs to a later object:
+        // the hex open must sit before any other PDF token that starts a value.
+        // A real sig dict has `/Contents<` or `/Contents <` with only whitespace.
+        let between = &buf[contents + b"/Contents".len()..lt];
+        if !between.iter().all(|b| b.is_ascii_whitespace()) {
+            continue;
+        }
+        let Some(gt) = find(buf, b">", lt) else {
+            continue;
+        };
+        last = Some((lt, gt, byte_range));
+    }
+    last.ok_or_else(|| CieError::Pdf("no signature /ByteRange+/Contents placeholder found".into()))
 }
 
-/// Overwrite the `/ByteRange` array in place, preserving its byte length.
-/// `search_from` skips any earlier (pre-existing) signatures.
-fn patch_byte_range(buf: &mut [u8], br: [i64; 4], search_from: usize) -> CieResult<()> {
-    let key = find(buf, b"/ByteRange", search_from)
-        .ok_or_else(|| CieError::Pdf("/ByteRange not found".into()))?;
+/// Overwrite the `/ByteRange` array at `key` in place, preserving its byte length.
+fn patch_byte_range_at(buf: &mut [u8], br: [i64; 4], key: usize) -> CieResult<()> {
     let lb = find(buf, b"[", key).ok_or_else(|| CieError::Pdf("ByteRange '[' not found".into()))?;
     let rb = find(buf, b"]", lb).ok_or_else(|| CieError::Pdf("ByteRange ']' not found".into()))?;
 
     let interior_len = rb - (lb + 1);
     let mut replacement = format!("{} {} {} {}", br[0], br[1], br[2], br[3]).into_bytes();
     if replacement.len() > interior_len {
-        return Err(CieError::Pdf("ByteRange placeholder too small".into()));
+        return Err(CieError::Pdf(format!(
+            "ByteRange placeholder too small (need {} bytes, have {} for values {:?})",
+            replacement.len(),
+            interior_len,
+            br
+        )));
     }
     replacement.resize(interior_len, b' ');
     buf[lb + 1..rb].copy_from_slice(&replacement);
@@ -708,12 +725,43 @@ mod tests {
             .unwrap();
         assert_eq!(fields.len(), 2, "both signature fields must be registered");
 
-        // The new signature's placeholder must be locatable and patchable using
-        // the returned search offset.
-        let (lt, gt) = find_contents_span(&out, prev_len).unwrap();
+        // The new signature's placeholder must be locatable and patchable —
+        // always the *last* hex Contents span.
+        let (lt, gt, br_key) = find_last_signature_span(&out).unwrap();
         assert!(lt >= prev_len && gt > lt);
+        assert!(br_key >= prev_len);
         let mut patched = out.clone();
         let br = [0i64, (lt + 1) as i64, gt as i64, (patched.len() - gt) as i64];
-        patch_byte_range(&mut patched, br, prev_len).expect("second ByteRange must fit");
+        patch_byte_range_at(&mut patched, br, br_key).expect("second ByteRange must fit");
+    }
+
+    /// Regression: a short first `/ByteRange` (as many third-party signers
+    /// write) must not be selected when patching our newly added placeholder.
+    #[test]
+    fn last_signature_span_skips_short_earlier_byterange() {
+        let base = minimal_pdf();
+        let first = build_placeholder_pdf(&base, Some("first"), None, None).unwrap();
+        // Shrink the first signature's ByteRange interior to something that
+        // cannot hold a large second-signature offset list.
+        let key = find(&first, b"/ByteRange", 0).unwrap();
+        let lb = find(&first, b"[", key).unwrap();
+        let rb = find(&first, b"]", lb).unwrap();
+        let mut short = first.clone();
+        let tiny = b"0 1 2 3";
+        assert!(tiny.len() < rb - (lb + 1));
+        short[lb + 1..lb + 1 + tiny.len()].copy_from_slice(tiny);
+        for b in short[lb + 1 + tiny.len()..rb].iter_mut() {
+            *b = b' ';
+        }
+
+        let (out, prev_len) = build_incremental_pdf(&short, Some("second"), None, None).unwrap();
+        assert_eq!(&out[..prev_len], &short[..]);
+
+        let (lt, gt, br_key) = find_last_signature_span(&out).unwrap();
+        assert!(br_key >= prev_len, "must select the new signature, not the short first one");
+        let mut patched = out.clone();
+        let br = [0i64, (lt + 1) as i64, gt as i64, (patched.len() - gt) as i64];
+        patch_byte_range_at(&mut patched, br, br_key)
+            .expect("patching the last (wide) placeholder must succeed");
     }
 }
