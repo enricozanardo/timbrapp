@@ -9,5 +9,11 @@ export default defineConfig({
 	},
 	worker: {
 		format: 'es'
+	},
+	build: {
+		// Transpile modern syntax (e.g. private class fields) so older
+		// macOS WebViews on Intel Macs can parse the bundle. Safari 14 ≈
+		// Big Sur; Apple Silicon Macs never ship below that.
+		target: ['es2020', 'safari14']
 	}
 });

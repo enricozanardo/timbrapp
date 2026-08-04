@@ -10,6 +10,30 @@
 		<meta name="description" content="Apply PNG stamps and signatures to PDF documents in the browser." />
 		<title>timbrapp — PDF stamping</title>
 		%sveltekit.head%
+		<script>
+			// Surface boot failures instead of a silent white window.
+			window.addEventListener('error', function (e) {
+				if (document.getElementById('timbrapp-boot-error')) return;
+				var el = document.createElement('pre');
+				el.id = 'timbrapp-boot-error';
+				el.style.cssText =
+					'position:fixed;inset:12px;z-index:99999;margin:0;padding:16px;overflow:auto;background:#1e1e1e;color:#f87171;font:13px/1.4 ui-monospace,monospace;white-space:pre-wrap;border-radius:8px;';
+				el.textContent =
+					'timbrapp failed to start:\n\n' +
+					(e.message || String(e.error || e)) +
+					(e.filename ? '\n\n' + e.filename + ':' + e.lineno : '');
+				document.documentElement.appendChild(el);
+			});
+			window.addEventListener('unhandledrejection', function (e) {
+				if (document.getElementById('timbrapp-boot-error')) return;
+				var el = document.createElement('pre');
+				el.id = 'timbrapp-boot-error';
+				el.style.cssText =
+					'position:fixed;inset:12px;z-index:99999;margin:0;padding:16px;overflow:auto;background:#1e1e1e;color:#f87171;font:13px/1.4 ui-monospace,monospace;white-space:pre-wrap;border-radius:8px;';
+				el.textContent = 'timbrapp failed to start:\n\n' + String(e.reason);
+				document.documentElement.appendChild(el);
+			});
+		</script>
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<div style="display: contents">%sveltekit.body%</div>

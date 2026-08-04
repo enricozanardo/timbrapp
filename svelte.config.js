@@ -6,13 +6,16 @@ const config = {
 	preprocess: vitePreprocess(),
 	kit: {
 		adapter: adapter({
-			fallback: 'index.html',
+			// Keep the SPA fallback OFF of index.html. When fallback is
+			// 'index.html', adapter-static overwrites the prerendered `/` page
+			// with absolute `/_app/...` asset URLs. Tauri's custom protocol
+			// then fails to load those assets on some macOS WebViews (notably
+			// Intel), producing a white empty window. A separate fallback
+			// leaves the prerendered index.html with relative `./_app/...`
+			// paths that resolve correctly.
+			fallback: '200.html',
 			strict: false
 		}),
-		// Tauri serves the frontend over a custom protocol where the build dir
-		// is the root, so absolute asset paths work — but emit relative URLs
-		// where possible so the same build also works if served from a
-		// subpath (e.g. from a static host).
 		paths: {
 			relative: true
 		}

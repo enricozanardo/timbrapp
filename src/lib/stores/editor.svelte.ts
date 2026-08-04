@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { LoadedPdf } from '../pdf/render';
+import type { LoadedPdf } from '../pdf/render';
 import { listStamps } from '../db/stampStore';
 import type { PageMeta, Placement, Stamp } from '../types';
 import { clampPlacement } from '../pdf/coords';
@@ -82,6 +82,9 @@ class EditorState {
 		this.loading = true;
 		this.loadError = null;
 		try {
+			// Lazy-load pdfjs so the app shell can mount even if the PDF
+			// engine fails on a given WebView (blank-window root cause).
+			const { LoadedPdf } = await import('../pdf/render');
 			const loaded = await LoadedPdf.load(pristine);
 
 			if (this.loaded) {
