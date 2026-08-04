@@ -3,12 +3,22 @@
 <plist version="1.0">
 <dict>
 	<!--
+		When a custom entitlements file is set, Tauri uses it as-is (it does
+		*not* merge the bundler's defaults). The notarized hardened runtime
+		then blocks WKWebView's JIT unless these keys are present — which
+		shows up as a white/empty window with no UI.
+
+		Required for the WebView (JavaScript JIT):
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<!--
 		The CIE PKCS#11 middleware (libcie-pkcs11.dylib) is signed by IPZS with
-		a different Apple Team ID than this app. Under the notarized hardened
-		runtime, macOS library validation refuses to dlopen a library whose
-		Team ID does not match the loading process ("different Team IDs"),
-		which breaks CIE signing. Disabling library validation lets us load the
-		system-installed middleware while keeping the hardened runtime on.
+		a different Apple Team ID than this app. Under the hardened runtime,
+		library validation otherwise refuses to dlopen it ("different Team
+		IDs"), which breaks CIE signing.
 	-->
 	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>

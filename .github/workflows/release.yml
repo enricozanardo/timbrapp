@@ -64,8 +64,10 @@ jobs:
             os: macos-latest
             rust-target: aarch64-apple-darwin
             args: '--target aarch64-apple-darwin'
+          # Native Intel runner (not cross-compile from Apple Silicon).
+          # macos-13 was retired; macos-15-intel is GitHub's current x86_64 image.
           - name: macOS (Intel)
-            os: macos-latest
+            os: macos-15-intel
             rust-target: x86_64-apple-darwin
             args: '--target x86_64-apple-darwin'
           - name: Linux (x86_64)
