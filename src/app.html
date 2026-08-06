@@ -9,6 +9,21 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="description" content="Apply PNG stamps and signatures to PDF documents in the browser." />
 		<title>timbrapp — PDF stamping</title>
+		<script>
+			// Promise.withResolvers is used by Svelte 5 / SvelteKit at boot, but
+			// only exists in Safari 17.4+. Intel Macs on older macOS WebViews
+			// throw "Promise.withResolvers is not a function" and show a blank UI.
+			if (typeof Promise.withResolvers !== 'function') {
+				Promise.withResolvers = function () {
+					var resolve, reject;
+					var promise = new Promise(function (res, rej) {
+						resolve = res;
+						reject = rej;
+					});
+					return { promise: promise, resolve: resolve, reject: reject };
+				};
+			}
+		</script>
 		%sveltekit.head%
 		<script>
 			// Surface boot failures instead of a silent white window.

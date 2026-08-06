@@ -1,6 +1,8 @@
-import * as pdfjs from 'pdfjs-dist';
+// Use the legacy build: it ships runtime polyfills (e.g. Promise.withResolvers)
+// needed on older Intel macOS WebViews that lack Safari 17.4+ APIs.
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 import type { PageMeta } from '../types';
 
 let workerConfigured = false;
