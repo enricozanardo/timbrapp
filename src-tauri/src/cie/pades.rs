@@ -47,7 +47,32 @@ pub fn sign_pdf(
     appearance: Option<SignatureAppearance>,
 ) -> CieResult<Vec<u8>> {
     let signer = CardSigner::open(module_path, slot_id, cert_id_hex, pin)?;
+    let cert_der = signer.certificate_der().to_vec();
+    sign_pdf_with(
+        pdf,
+        &cert_der,
+        |tbs| signer.sign(tbs),
+        reason,
+        location,
+        appearance,
+    )
+}
 
+/// Signer-agnostic PAdES core: everything except where the key lives.
+///
+/// `sign` receives the DER-encoded CMS signed attributes and must return a
+/// PKCS#1 v1.5 signature over their SHA-256.
+fn sign_pdf_with<F>(
+    pdf: &[u8],
+    cert_der: &[u8],
+    sign: F,
+    reason: Option<&str>,
+    location: Option<&str>,
+    appearance: Option<SignatureAppearance>,
+) -> CieResult<Vec<u8>>
+where
+    F: FnOnce(&[u8]) -> CieResult<Vec<u8>>,
+{
     // A PDF that already carries a signature (`/ByteRange` only appears in
     // signature dictionaries) must be extended with an *incremental update* so
     // the existing signature's signed byte ranges stay untouched. Signing an
@@ -64,19 +89,29 @@ pub fn sign_pdf(
     // with a short, already-filled `/ByteRange`) caused "placeholder too small".
     let (contents_lt, contents_gt, br_key) = find_last_signature_span(&buf)?;
 
-    // ByteRange covers everything except the hex between < and >.
+    // `/ByteRange` covers everything except the `/Contents` string *including*
+    // its `<` and `>` delimiters. Leaving the delimiters inside the signed
+    // ranges is still self-consistent (the digest matches, so verifiers that
+    // only re-hash report "valid"), but it breaks the universal convention
+    // `start2 == len1 + len(contents) * 2 + 2`. Strict validators use that
+    // identity to recognise the gap as the signature value; when it is off they
+    // classify the coverage as non-standard and can no longer tell which
+    // revision the signature covers. The practical symptom is that every
+    // earlier signature of a multi-signed document is reported invalid.
+    let gap_start = contents_lt; // the `<`
+    let gap_end = contents_gt + 1; // one past the `>`
     let br = [
         0i64,
-        (contents_lt + 1) as i64,
-        contents_gt as i64,
-        (buf.len() - contents_gt) as i64,
+        gap_start as i64,
+        gap_end as i64,
+        (buf.len() - gap_end) as i64,
     ];
     patch_byte_range_at(&mut buf, br, br_key)?;
 
     // Digest over the two signed ranges (ByteRange is already final).
-    let digest = sha256_ranges(&buf, contents_lt + 1, contents_gt);
+    let digest = sha256_ranges(&buf, gap_start, gap_end);
 
-    let cms_der = cms::build_detached_pkcs7(signer.certificate_der(), &digest, |tbs| signer.sign(tbs))?;
+    let cms_der = cms::build_detached_pkcs7(cert_der, &digest, sign)?;
 
     embed_contents(&mut buf, contents_lt, contents_gt, &cms_der)?;
     Ok(buf)
@@ -357,7 +392,38 @@ fn build_incremental_pdf(
     let mut out = Vec::new();
     idoc.save_to(&mut out)
         .map_err(|e| CieError::Pdf(e.to_string()))?;
+    neutralize_appended_header(&mut out, prev_len);
     Ok((out, prev_len))
+}
+
+/// Erase the `%PDF-x.y` header line that lopdf emits at the start of an appended
+/// revision.
+///
+/// A second `%PDF-` marker right after `%%EOF` is not part of an incremental
+/// update (PDF 32000-1 §7.5.6: original bytes, added objects, xref section,
+/// trailer — no header). Validators that split a file into revisions read it as
+/// two concatenated documents and can no longer attribute the earlier revision
+/// to the earlier signature, so they report that first signature as invalid even
+/// though its signed bytes are untouched.
+///
+/// The line is overwritten in place with a same-length comment: the appended
+/// cross-reference section stores absolute offsets, so the byte count must not
+/// change. Called before the `/ByteRange` and digest are computed, so the new
+/// signature covers the rewritten bytes.
+fn neutralize_appended_header(buf: &mut [u8], appended_from: usize) {
+    let Some(start) = find(buf, b"%PDF-", appended_from) else {
+        return;
+    };
+    // Only the writer's own header, which sits at the very start of the appended
+    // region (optionally after a separating newline) - never a later match.
+    if start > appended_from + 1 {
+        return;
+    }
+    let end = find(buf, b"\n", start).unwrap_or(buf.len());
+    buf[start] = b'%';
+    for b in &mut buf[start + 1..end] {
+        *b = b' ';
+    }
 }
 
 /// Append a field reference to an AcroForm's `/Fields` (inline array form).
@@ -733,6 +799,170 @@ mod tests {
         let mut patched = out.clone();
         let br = [0i64, (lt + 1) as i64, gt as i64, (patched.len() - gt) as i64];
         patch_byte_range_at(&mut patched, br, br_key).expect("second ByteRange must fit");
+    }
+
+    /// Generate a self-signed RSA key + cert with openssl, returning
+    /// (key_pem_path, cert_der).
+    fn make_test_signer(tag: &str) -> Option<(String, Vec<u8>)> {
+        use std::process::Command;
+        let dir = std::env::temp_dir().join(format!("timbrapp-pades-{tag}"));
+        std::fs::create_dir_all(&dir).ok()?;
+        let key = dir.join("key.pem");
+        let crt = dir.join("cert.der");
+        let ok = Command::new("openssl")
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                key.to_str()?,
+                "-out",
+                crt.to_str()?,
+                "-outform",
+                "DER",
+                "-days",
+                "3650",
+                "-nodes",
+                "-subj",
+                &format!("/C=IT/CN=Test Signer {tag}"),
+            ])
+            .output()
+            .ok()?;
+        if !ok.status.success() {
+            return None;
+        }
+        Some((key.to_str()?.to_string(), std::fs::read(&crt).ok()?))
+    }
+
+    /// PKCS#1 v1.5 signature over SHA-256 of `tbs` — same shape the card produces.
+    fn openssl_sign(key_pem: &str, tbs: &[u8]) -> CieResult<Vec<u8>> {
+        use std::process::Command;
+        let dir = std::path::Path::new(key_pem).parent().unwrap();
+        let tbs_path = dir.join("tbs.bin");
+        let sig_path = dir.join("sig.bin");
+        std::fs::write(&tbs_path, tbs).map_err(|e| CieError::Other(e.to_string()))?;
+        let out = Command::new("openssl")
+            .args([
+                "dgst",
+                "-sha256",
+                "-sign",
+                key_pem,
+                "-out",
+                sig_path.to_str().unwrap(),
+                tbs_path.to_str().unwrap(),
+            ])
+            .output()
+            .map_err(|e| CieError::Other(e.to_string()))?;
+        if !out.status.success() {
+            return Err(CieError::Other(String::from_utf8_lossy(&out.stderr).into()));
+        }
+        std::fs::read(&sig_path).map_err(|e| CieError::Other(e.to_string()))
+    }
+
+    /// End-to-end: produce a genuinely signed 1-sig and 2-sig PDF with software
+    /// keys and write them to /tmp so `pdfsig` can validate them.
+    #[test]
+    fn produce_real_single_and_double_signed_pdfs() {
+        let Some((key_a, cert_a)) = make_test_signer("a") else {
+            eprintln!("openssl unavailable — skipping");
+            return;
+        };
+        let Some((key_b, cert_b)) = make_test_signer("b") else {
+            return;
+        };
+
+        // A real-world PDF (real xref tables, object streams, trailer /ID)
+        // exercises far more of the incremental path than the synthetic one.
+        let base = match std::env::var("TIMBRAPP_TEST_PDF") {
+            Ok(p) => std::fs::read(p).expect("TIMBRAPP_TEST_PDF unreadable"),
+            Err(_) => minimal_pdf(),
+        };
+        let one = sign_pdf_with(
+            &base,
+            &cert_a,
+            |tbs| openssl_sign(&key_a, tbs),
+            Some("first signer"),
+            None,
+            None,
+        )
+        .expect("first signature");
+        std::fs::write("/tmp/timbrapp-sig1.pdf", &one).unwrap();
+
+        let two = sign_pdf_with(
+            &one,
+            &cert_b,
+            |tbs| openssl_sign(&key_b, tbs),
+            Some("second signer"),
+            None,
+            None,
+        )
+        .expect("second signature");
+        std::fs::write("/tmp/timbrapp-sig2.pdf", &two).unwrap();
+
+        // Original revision must be preserved byte-for-byte.
+        assert_eq!(&two[..one.len()], &one[..]);
+        assert_eq!(count_byteranges(&two), 2);
+
+        // The appended revision must not contain a second `%PDF-` header, which
+        // would make validators read the file as two concatenated documents.
+        assert!(
+            find(&two, b"%PDF-", one.len()).is_none(),
+            "incremental update must not restate a PDF header"
+        );
+
+        // Re-verify the FIRST signature's digest over its own byte ranges in the
+        // *double-signed* file: this is exactly what a validator recomputes.
+        let first_br = find(&two, b"/ByteRange", 0).unwrap();
+        let lb = find(&two, b"[", first_br).unwrap();
+        let rb = find(&two, b"]", lb).unwrap();
+        let text = String::from_utf8_lossy(&two[lb + 1..rb]);
+        let nums: Vec<usize> = text
+            .split_whitespace()
+            .map(|t| t.parse().unwrap())
+            .collect();
+        assert_eq!(nums.len(), 4, "ByteRange must have 4 entries: {text}");
+        let (o1, l1, o2, l2) = (nums[0], nums[1], nums[2], nums[3]);
+        assert_eq!(o1, 0);
+
+        // The gap between the signed ranges must be exactly the `/Contents`
+        // string *with* its `<` and `>`. Validators rely on this identity to
+        // recognise the excluded bytes as the signature value.
+        let lt = find(&two, b"<", first_br).unwrap();
+        let gt = find(&two, b">", lt).unwrap();
+        let contents_hex = gt - (lt + 1);
+        assert_eq!(
+            o2,
+            l1 + contents_hex + 2,
+            "signed ranges must exclude /Contents including its delimiters"
+        );
+
+        assert_eq!(
+            o2 + l2,
+            one.len(),
+            "first signature's signed range must end at the original EOF, \
+             so appending a second signature cannot disturb it"
+        );
+        // The bytes it covers must be identical in both files.
+        assert_eq!(&two[o1..o1 + l1], &one[o1..o1 + l1]);
+        assert_eq!(&two[o2..o2 + l2], &one[o2..o2 + l2]);
+
+        // A third signature stacks an increment on top of an increment.
+        let Some((key_c, cert_c)) = make_test_signer("c") else {
+            return;
+        };
+        let three = sign_pdf_with(
+            &two,
+            &cert_c,
+            |tbs| openssl_sign(&key_c, tbs),
+            Some("third signer"),
+            None,
+            None,
+        )
+        .expect("third signature");
+        std::fs::write("/tmp/timbrapp-sig3.pdf", &three).unwrap();
+        assert_eq!(&three[..two.len()], &two[..]);
+        assert_eq!(count_byteranges(&three), 3);
     }
 
     /// Regression: a short first `/ByteRange` (as many third-party signers

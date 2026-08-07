@@ -3,7 +3,7 @@
 //!
 //! Usage: cargo run --example cie_probe -- /path/to/libcie-pkcs11.so
 
-use cryptoki::context::{CInitializeArgs, Pkcs11};
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 
 fn main() {
     let path = std::env::args()
@@ -19,7 +19,7 @@ fn main() {
         }
     };
 
-    if let Err(e) = pkcs11.initialize(CInitializeArgs::OsThreads) {
+    if let Err(e) = pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)) {
         eprintln!("FAILED C_Initialize: {e}");
         std::process::exit(2);
     }
