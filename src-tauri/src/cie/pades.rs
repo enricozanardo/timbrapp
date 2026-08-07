@@ -73,11 +73,10 @@ fn sign_pdf_with<F>(
 where
     F: FnOnce(&[u8]) -> CieResult<Vec<u8>>,
 {
-    // A PDF that already carries a signature (`/ByteRange` only appears in
-    // signature dictionaries) must be extended with an *incremental update* so
-    // the existing signature's signed byte ranges stay untouched. Signing an
-    // unsigned PDF uses the simpler full rewrite.
-    let already_signed = find(pdf, b"/ByteRange", 0).is_some();
+    // A PDF that already carries a signature must be extended with an
+    // *incremental update* so the existing signatures' signed byte ranges stay
+    // untouched. Signing an unsigned PDF uses the simpler full rewrite.
+    let already_signed = check_existing_signatures(pdf)?;
     let mut buf = if already_signed {
         build_incremental_pdf(pdf, reason, location, appearance.as_ref())?.0
     } else {
@@ -115,6 +114,100 @@ where
 
     embed_contents(&mut buf, contents_lt, contents_gt, &cms_der)?;
     Ok(buf)
+}
+
+/// Decide whether `pdf` already carries signatures, and refuse to sign when the
+/// ones it carries have already been broken.
+///
+/// Detection parses the document rather than scanning the raw bytes: a signature
+/// dictionary may sit inside a compressed object stream, where `/ByteRange`
+/// never appears as plain text. Missing those meant falling back to the
+/// full-rewrite path, which relocates every object and silently destroys the
+/// existing signatures.
+///
+/// Two states are rejected outright, because signing on top of them can only
+/// produce a document whose earlier signature is invalid:
+///
+/// * a signature dictionary that the raw scan cannot see - it was re-serialized
+///   into an object stream by some other tool, so its byte offsets already moved;
+/// * a `/ByteRange` whose declared gap no longer lines up with where its own
+///   `/Contents` actually is - the file was rewritten after signing.
+fn check_existing_signatures(pdf: &[u8]) -> CieResult<bool> {
+    // Signature dictionaries as seen after parsing (object streams expanded).
+    let parsed = match Document::load_mem(pdf) {
+        Ok(doc) => doc
+            .objects
+            .values()
+            .filter(|o| matches!(o, Object::Dictionary(d) if d.has(b"ByteRange")))
+            .count(),
+        // Unparseable here means the placeholder builders would fail anyway;
+        // let them report the real error.
+        Err(_) => return Ok(find(pdf, b"/ByteRange", 0).is_some()),
+    };
+    if parsed == 0 {
+        return Ok(false);
+    }
+
+    let mut raw = 0usize;
+    let mut pos = 0usize;
+    while let Some(at) = find(pdf, b"/ByteRange", pos) {
+        raw += 1;
+        pos = at + 1;
+    }
+    if raw < parsed {
+        return Err(CieError::Pdf(
+            "this PDF's existing signature has been re-saved by another tool \
+             (it is stored in a compressed object stream), so it is already \
+             invalid. Sign the original signed file instead."
+                .into(),
+        ));
+    }
+
+    // Each existing signature's declared gap must still be exactly its own
+    // `/Contents` string, delimiters included.
+    let mut pos = 0usize;
+    while let Some(br_key) = find(pdf, b"/ByteRange", pos) {
+        pos = br_key + 1;
+        let Some(br) = parse_byte_range(pdf, br_key) else {
+            continue;
+        };
+        let Some(contents) = find(pdf, b"/Contents", br_key) else {
+            continue;
+        };
+        let Some(lt) = find(pdf, b"<", contents) else {
+            continue;
+        };
+        // A hex string, not a nested dictionary (`<<`) or an object reference.
+        if pdf.get(lt + 1) == Some(&b'<') {
+            continue;
+        }
+        let Some(gt) = find(pdf, b">", lt) else {
+            continue;
+        };
+        if br[1] as usize != lt || br[2] as usize != gt + 1 {
+            return Err(CieError::Pdf(
+                "this PDF was modified after it was signed, so its existing \
+                 signature is already invalid. Sign the unmodified signed file, \
+                 and note that flattening stamps into a signed PDF breaks its \
+                 signatures."
+                    .into(),
+            ));
+        }
+    }
+
+    Ok(true)
+}
+
+/// Read the four `/ByteRange` integers that follow the key at `key`.
+fn parse_byte_range(buf: &[u8], key: usize) -> Option<[i64; 4]> {
+    let lb = find(buf, b"[", key)?;
+    let rb = find(buf, b"]", lb)?;
+    let text = std::str::from_utf8(&buf[lb + 1..rb]).ok()?;
+    let nums: Vec<i64> = text.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    if nums.len() != 4 {
+        return None;
+    }
+    Some([nums[0], nums[1], nums[2], nums[3]])
 }
 
 fn build_placeholder_pdf(
@@ -963,6 +1056,44 @@ mod tests {
         std::fs::write("/tmp/timbrapp-sig3.pdf", &three).unwrap();
         assert_eq!(&three[..two.len()], &two[..]);
         assert_eq!(count_byteranges(&three), 3);
+    }
+
+    /// Signing a document that was re-saved after signing (what flattening
+    /// stamps used to do) must fail loudly instead of producing a file whose
+    /// earlier signature is silently broken.
+    #[test]
+    fn refuses_to_sign_a_document_altered_after_signing() {
+        let Some((key, cert)) = make_test_signer("d") else {
+            eprintln!("openssl unavailable — skipping");
+            return;
+        };
+        let one = sign_pdf_with(
+            &minimal_pdf(),
+            &cert,
+            |tbs| openssl_sign(&key, tbs),
+            None,
+            None,
+            None,
+        )
+        .expect("first signature");
+        assert!(
+            check_existing_signatures(&one).expect("intact signed pdf is signable"),
+            "a signed PDF must be recognised as already signed"
+        );
+
+        // Re-serialize the way a PDF library does when flattening stamps: every
+        // object is rewritten, so the signature's byte offsets move.
+        let mut doc = Document::load_mem(&one).unwrap();
+        let mut resaved = Vec::new();
+        doc.save_to(&mut resaved).unwrap();
+
+        let err = check_existing_signatures(&resaved)
+            .expect_err("a re-saved signed PDF must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("modified after it was signed") || msg.contains("object stream"),
+            "unexpected error: {msg}"
+        );
     }
 
     /// Regression: a short first `/ByteRange` (as many third-party signers

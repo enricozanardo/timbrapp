@@ -19,10 +19,18 @@ export async function buildStampedPdf({
 	placements,
 	stamps
 }: StampedPdfInput): Promise<Uint8Array> {
-	const doc = await PDFDocument.load(originalBytes);
-
 	const stampById = new Map<string, Stamp>(stamps.map((s) => [s.id, s]));
-	const usedStampIds = new Set(placements.map((p) => p.stampId));
+
+	// With nothing to draw, hand back the original bytes untouched. Loading and
+	// re-saving is not a no-op: pdf-lib rewrites every object, which moves the
+	// bytes an existing signature covers and invalidates it. That is what broke
+	// the first signature when a second one was added, since the signature box
+	// itself is drawn by the backend and never flattened here.
+	const drawable = placements.filter((p) => stampById.has(p.stampId));
+	if (drawable.length === 0) return originalBytes;
+
+	const doc = await PDFDocument.load(originalBytes);
+	const usedStampIds = new Set(drawable.map((p) => p.stampId));
 
 	const embedded = new Map<string, Awaited<ReturnType<typeof doc.embedPng>>>();
 	for (const stampId of usedStampIds) {
@@ -33,7 +41,7 @@ export async function buildStampedPdf({
 	}
 
 	const pages = doc.getPages();
-	for (const placement of placements) {
+	for (const placement of drawable) {
 		const img = embedded.get(placement.stampId);
 		const page = pages[placement.pageIndex];
 		if (!img || !page) continue;
